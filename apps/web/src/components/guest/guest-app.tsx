@@ -21,13 +21,14 @@ import { useUploadQueue, type UploadLimits, type UploadTask } from './use-upload
 const ACCEPT =
   'image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,.heic,.heif,video/mp4,video/quicktime,video/webm';
 
-// Samsung Internet opens the Samsung Gallery for any image+video filter, and the gallery never
-// hands the file back, leaving every later picker dead. With image/* it works and still offers videos.
-const SAMSUNG_ACCEPT = 'image/*';
+// Samsung Internet offers the Samsung Gallery for any accept filter, and a file picked there never
+// reaches the page; the picker then stays dead until the browser restarts. Without a filter the
+// browser offers only Camera and My Files, which work.
+const SAMSUNG_ACCEPT = undefined;
 
 const noSubscribe = () => () => {};
 
-function useAcceptAttribute(): string {
+function useAcceptAttribute(): string | undefined {
   return useSyncExternalStore(
     noSubscribe,
     () => (/SamsungBrowser/i.test(navigator.userAgent) ? SAMSUNG_ACCEPT : ACCEPT),
