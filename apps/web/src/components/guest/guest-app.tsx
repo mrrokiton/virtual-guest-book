@@ -10,7 +10,7 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/card';
 import type { GalleryItem } from '@/lib/weddings';
@@ -20,6 +20,20 @@ import { useUploadQueue, type UploadLimits, type UploadTask } from './use-upload
 
 const ACCEPT =
   'image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,.heic,.heif,video/mp4,video/quicktime,video/webm';
+
+// Samsung Internet opens the Samsung Gallery for any image+video filter, and the gallery never
+// hands the file back, leaving every later picker dead. With image/* it works and still offers videos.
+const SAMSUNG_ACCEPT = 'image/*';
+
+const noSubscribe = () => () => {};
+
+function useAcceptAttribute(): string {
+  return useSyncExternalStore(
+    noSubscribe,
+    () => (/SamsungBrowser/i.test(navigator.userAgent) ? SAMSUNG_ACCEPT : ACCEPT),
+    () => ACCEPT,
+  );
+}
 
 function useMyUploads(slug: string) {
   const storageKey = `vgb:mine:${slug}`;
@@ -151,6 +165,7 @@ export function GuestApp({
   const queue = useUploadQueue(slug, limits, my.add);
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const [showQueue, setShowQueue] = useState(true);
+  const accept = useAcceptAttribute();
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
@@ -310,7 +325,7 @@ export function GuestApp({
           <input
             ref={inputRef}
             type="file"
-            accept={ACCEPT}
+            accept={accept}
             multiple
             hidden
             onChange={(e) => {
