@@ -1,4 +1,5 @@
 import { expect, type Browser, type Page } from '@playwright/test';
+import { Client } from 'pg';
 
 const MAILPIT = process.env.MAILPIT_URL ?? 'http://localhost:8025';
 
@@ -43,6 +44,19 @@ function todayInWarsaw(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Warsaw' }).format(new Date());
 }
 
+/** Stands in for the platform admin clicking "Zatwierdź" in /admin. */
+async function approveWedding(id: string): Promise<void> {
+  const client = new Client({
+    connectionString: process.env.DATABASE_URL ?? 'postgres://vgb:vgb@localhost:5432/vgb',
+  });
+  await client.connect();
+  try {
+    await client.query('update weddings set approved_at = now() where id = $1', [id]);
+  } finally {
+    await client.end();
+  }
+}
+
 export interface WeddingInfo {
   id: string;
   guestUrl: string;
@@ -56,6 +70,8 @@ export async function createActiveWedding(page: Page, name: string): Promise<Wed
   await page.getByRole('button', { name: 'Utwórz wesele' }).click();
   await expect(page).toHaveURL(/\/dashboard\/weddings\/[0-9a-f-]{36}$/);
   const id = page.url().split('/').pop()!;
+  await approveWedding(id);
+  await page.reload();
   await page.getByRole('button', { name: 'Aktywuj wesele' }).click();
   await expect(page.getByText('Aktywne', { exact: true })).toBeVisible();
   const guestUrl = (await page.getByTestId('guest-url').textContent())!.trim();

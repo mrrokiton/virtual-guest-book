@@ -23,6 +23,7 @@ function wedding(overrides: Partial<WeddingLifecycle> = {}): WeddingLifecycle {
     statusBeforeDeletion: null,
     plan: 'standard',
     blockedAt: null,
+    approvedAt: event,
     purgeAt: null,
     ...schedule,
     ...overrides,
@@ -97,6 +98,12 @@ describe('manual transitions', () => {
     expect(activate(wedding({ status: 'draft' }), event).to).toBe('active');
     expect(() => activate(wedding({ status: 'draft' }), addDays(event, 10))).toThrow(DomainError);
     expect(() => activate(wedding(), event)).toThrow(DomainError);
+  });
+
+  it('refuses to activate a draft that the platform admin has not approved', () => {
+    expect(() => activate(wedding({ status: 'draft', approvedAt: null }), event)).toThrow(
+      DomainError,
+    );
   });
 
   it('schedules deletion with a grace period and restores to the time-appropriate status', () => {

@@ -28,6 +28,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'wedding.read_only': 'Zamknięto dodawanie zdjęć',
   'wedding.archived': 'Zarchiwizowano galerię',
   'wedding.deletion_scheduled': 'Zaplanowano automatyczne usunięcie',
+  'wedding.approved': 'Zatwierdzone przez administratora platformy',
   'wedding.blocked': 'Zablokowane przez administratora platformy',
   'wedding.unblocked': 'Odblokowane przez administratora platformy',
   'media.hide': 'Ukryto plik',
@@ -59,7 +60,14 @@ export default async function WeddingOverviewPage({ params }: { params: Promise<
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      {wedding.status === 'draft' ? (
+      {wedding.status === 'draft' && !wedding.approvedAt ? (
+        <Alert className="lg:col-span-2">
+          Wesele czeka na zatwierdzenie przez administratora platformy. Do tego czasu goście nie
+          mają dostępu. Możesz już przygotować ustawienia, a aktywujesz wesele po zatwierdzeniu.
+        </Alert>
+      ) : null}
+
+      {wedding.status === 'draft' && wedding.approvedAt ? (
         <Alert className="lg:col-span-2">
           Wesele jest w szkicu: goście jeszcze nie mają dostępu. Sprawdź ustawienia i aktywuj je,
           gdy będziesz gotowy.

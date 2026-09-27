@@ -24,6 +24,7 @@ export function toLifecycle(w: Wedding): WeddingLifecycle {
     archiveAt: w.archiveAt,
     purgeAt: w.purgeAt,
     blockedAt: w.blockedAt,
+    approvedAt: w.approvedAt,
   };
 }
 
@@ -190,12 +191,13 @@ export async function listAllWeddings(db: Database, opts: { limit: number; offse
       plan: weddings.plan,
       eventDate: weddings.eventDate,
       blockedAt: weddings.blockedAt,
+      approvedAt: weddings.approvedAt,
       tenantName: tenants.name,
       createdAt: weddings.createdAt,
     })
     .from(weddings)
     .innerJoin(tenants, eq(tenants.id, weddings.tenantId))
-    .orderBy(desc(weddings.createdAt))
+    .orderBy(desc(isNull(weddings.approvedAt)), desc(weddings.createdAt))
     .limit(opts.limit)
     .offset(opts.offset);
 

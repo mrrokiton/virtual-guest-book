@@ -74,6 +74,10 @@ export const weddings = pgTable(
     purgeAt: timestamp('purge_at', { withTimezone: true }),
     blockedAt: timestamp('blocked_at', { withTimezone: true }),
     blockedReason: text('blocked_reason'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    approvedByUserId: text('approved_by_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
     pinCiphertext: text('pin_ciphertext').notNull(),
     pinRotatedAt: timestamp('pin_rotated_at', { withTimezone: true }).notNull().defaultNow(),
     theme: jsonb('theme').$type<WeddingTheme>().notNull().default({}),

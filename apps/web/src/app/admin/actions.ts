@@ -35,3 +35,21 @@ export async function setWeddingBlockedAction(
   revalidatePath('/admin');
   return { ok: block ? 'Zablokowano.' : 'Odblokowano.' };
 }
+
+export async function approveWeddingAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const user = await getUser();
+  if (!user || !(await isPlatformAdmin(db(), user.id))) return { error: 'Brak uprawnień.' };
+  const parsed = z.object({ weddingId: z.uuid() }).safeParse(Object.fromEntries(form));
+  if (!parsed.success) return { error: 'Nieprawidłowe dane.' };
+  await updateWedding(db(), parsed.data.weddingId, {
+    approvedAt: new Date(),
+    approvedByUserId: user.id,
+  });
+  await weddingScope(db(), parsed.data.weddingId).audit({
+    actorType: 'platform_admin',
+    actorId: user.id,
+    action: 'wedding.approved',
+  });
+  revalidatePath('/admin');
+  return { ok: 'Zatwierdzono.' };
+}

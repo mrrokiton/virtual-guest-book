@@ -7,7 +7,7 @@ import { requirePlatformAdmin } from '@/lib/session';
 import { db } from '@/lib/server';
 import { formatDate } from '@/lib/utils';
 import { STATUS_LABELS, STATUS_TONES } from '@/lib/weddings';
-import { setWeddingBlockedAction } from './actions';
+import { approveWeddingAction, setWeddingBlockedAction } from './actions';
 
 export const metadata = { title: 'Platforma', robots: { index: false } };
 
@@ -24,6 +24,7 @@ export default async function PlatformAdminPage({
     listAllWeddings(db(), { limit: PAGE, offset: page * PAGE }),
     listTenants(db()),
   ]);
+  const pending = weddings.filter((w) => !w.approvedAt).length;
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
@@ -38,7 +39,8 @@ export default async function PlatformAdminPage({
         <CardTitle>Wesela</CardTitle>
         <CardDescription>
           Administrator platformy nie ma wglądu w zdjęcia. Może jedynie zablokować wesele, np. po
-          zgłoszeniu nadużycia.
+          zgłoszeniu nadużycia. Nowe wesele można aktywować dopiero po zatwierdzeniu.
+          {pending > 0 ? ` Czeka na zatwierdzenie: ${pending}.` : ''}
         </CardDescription>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -49,6 +51,7 @@ export default async function PlatformAdminPage({
                 <th className="py-2 pr-4">Data</th>
                 <th className="py-2 pr-4">Status</th>
                 <th className="py-2 pr-4">Pliki</th>
+                <th className="py-2 pr-4">Zatwierdzenie</th>
                 <th className="py-2">Blokada</th>
               </tr>
             </thead>
@@ -62,6 +65,16 @@ export default async function PlatformAdminPage({
                     <Badge tone={STATUS_TONES[w.status]}>{STATUS_LABELS[w.status]}</Badge>
                   </td>
                   <td className="py-2 pr-4">{w.mediaCount}</td>
+                  <td className="py-2 pr-4">
+                    {w.approvedAt ? (
+                      <span className="text-muted-foreground">{formatDate(w.approvedAt)}</span>
+                    ) : (
+                      <ActionForm action={approveWeddingAction}>
+                        <input type="hidden" name="weddingId" value={w.id} />
+                        <SubmitButton size="sm">Zatwierdź</SubmitButton>
+                      </ActionForm>
+                    )}
+                  </td>
                   <td className="py-2">
                     <ActionForm
                       action={setWeddingBlockedAction}

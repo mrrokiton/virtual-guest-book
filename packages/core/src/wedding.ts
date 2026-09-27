@@ -29,6 +29,7 @@ export interface WeddingLifecycle {
   archiveAt: Date;
   purgeAt: Date | null;
   blockedAt: Date | null;
+  approvedAt: Date | null;
 }
 
 export interface WeddingSchedule {
@@ -115,6 +116,12 @@ export function dueTransition(w: WeddingLifecycle, now: Date): Transition | null
 export function activate(w: WeddingLifecycle, now: Date): { to: 'active' } {
   if (w.status !== 'draft') {
     throw new DomainError('invalid_state', 'Tylko wesele w stanie szkicu można aktywować.');
+  }
+  if (!w.approvedAt) {
+    throw new DomainError(
+      'invalid_state',
+      'Wesele czeka na zatwierdzenie przez administratora platformy.',
+    );
   }
   if (now >= w.readOnlyAt) {
     throw new DomainError('invalid_state', 'Okno dodawania zdjęć już minęło. Zmień datę wesela.');
