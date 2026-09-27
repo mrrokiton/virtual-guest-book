@@ -2,12 +2,14 @@
 #   fly deploy . --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile
 app = "vgb-worker"
 primary_region = "fra"
+kill_signal = "SIGTERM"
+kill_timeout = 75
 
 [env]
   NODE_ENV = "production"
   VIDEO_PROVIDER = "cloudflare"
   S3_REGION = "auto"
-  S3_FORCE_PATH_STYLE = "false"
+  S3_FORCE_PATH_STYLE = "true"
 
 [deploy]
   release_command = "node_modules/.bin/tsx ../../packages/db/src/migrate-cli.ts"
@@ -16,9 +18,6 @@ primary_region = "fra"
 
 [processes]
   worker = "node_modules/.bin/tsx src/index.ts"
-
-kill_signal = "SIGTERM"
-kill_timeout = 75
 
 [[vm]]
   # sharp + HEIC decoding of 48 MP phone photos needs headroom.

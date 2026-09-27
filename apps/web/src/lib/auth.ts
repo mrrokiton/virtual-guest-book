@@ -41,6 +41,8 @@ function createAuth() {
       },
     },
     rateLimit: { enabled: cfg.NODE_ENV === 'production', window: 60, max: 30 },
+    // Fly's proxy overwrites Fly-Client-IP; without it every client shares one rate-limit bucket.
+    advanced: { ipAddress: { ipAddressHeaders: ['fly-client-ip'] } },
     plugins: [
       magicLink({
         disableSignUp: true,

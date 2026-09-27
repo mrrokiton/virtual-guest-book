@@ -8,7 +8,8 @@ primary_region = "fra"
   PORT = "3000"
   VIDEO_PROVIDER = "cloudflare"
   S3_REGION = "auto"
-  S3_FORCE_PATH_STYLE = "false"
+  # Path-style keeps presigned URLs on the S3_ENDPOINT origin that the CSP allows.
+  S3_FORCE_PATH_STYLE = "true"
 
 [http_service]
   internal_port = 3000
