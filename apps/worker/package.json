@@ -1,0 +1,31 @@
+{
+  "name": "@vgb/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "start": "tsx --env-file-if-exists=../../.env src/index.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@sentry/node": "^11.0.0",
+    "@vgb/core": "workspace:*",
+    "@vgb/db": "workspace:*",
+    "@vgb/services": "workspace:*",
+    "archiver": "^8.0.0",
+    "heic-convert": "^2.1.0",
+    "pg": "^8.23.0",
+    "pg-boss": "^12.34.0",
+    "sharp": "^0.35.4",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/heic-convert": "^2.1.1",
+    "@types/node": "^26.6.2",
+    "@types/pg": "^8.23.1",
+    "vitest": "^5.0.2"
+  }
+}

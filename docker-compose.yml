@@ -1,0 +1,57 @@
+name: vgb
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: vgb
+      POSTGRES_PASSWORD: vgb
+      POSTGRES_DB: vgb
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vgb']
+      interval: 5s
+      retries: 10
+
+  # S3-compatible stand-in for Cloudflare R2.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: vgb-minio
+      MINIO_ROOT_PASSWORD: vgb-minio-secret
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      retries: 10
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 vgb-minio vgb-minio-secret &&
+      mc mb --ignore-existing local/vgb-media &&
+      mc anonymous set none local/vgb-media
+      "
+
+  # Captures outgoing e-mail in development: http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+
+volumes:
+  pgdata:
+  miniodata:

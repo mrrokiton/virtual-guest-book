@@ -1,0 +1,27 @@
+# Deploy from the repository root, BEFORE the web app (it applies database migrations):
+#   fly deploy . --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile
+app = "vgb-worker"
+primary_region = "fra"
+
+[env]
+  NODE_ENV = "production"
+  VIDEO_PROVIDER = "cloudflare"
+  S3_REGION = "auto"
+  S3_FORCE_PATH_STYLE = "false"
+
+[deploy]
+  release_command = "node_modules/.bin/tsx ../../packages/db/src/migrate-cli.ts"
+  # Let active photo/ZIP jobs finish (the worker stops gracefully on SIGTERM, up to 60 s).
+  strategy = "rolling"
+
+[processes]
+  worker = "node_modules/.bin/tsx src/index.ts"
+
+kill_signal = "SIGTERM"
+kill_timeout = 75
+
+[[vm]]
+  # sharp + HEIC decoding of 48 MP phone photos needs headroom.
+  size = "shared-cpu-2x"
+  memory = "1gb"
+  processes = ["worker"]
