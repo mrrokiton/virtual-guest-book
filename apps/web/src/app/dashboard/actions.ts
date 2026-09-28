@@ -10,10 +10,12 @@ import {
   DELETION_REMINDER_DAYS,
   DomainError,
   encryptSecret,
+  EXPORT_SUPERSEDED,
   generatePin,
   generateSlug,
   generateToken,
   MAX_UPLOAD_DAYS,
+  mediaPurgeRequest,
   QUEUE_CONFIG,
   QUEUES,
   requestDeletion,
@@ -205,35 +207,28 @@ export async function moderateMediaAction(_: ActionState, form: FormData): Promi
 
     const scope = weddingScope(db(), wedding.id);
     const now = new Date();
-    const targets = (await Promise.all(ids.data.map((id) => scope.media.get(id)))).filter(
-      (m) => m && m.status !== 'deleted',
-    );
+    const moves = {
+      hide: { from: ['ready'], patch: { status: 'hidden', hiddenAt: now }, event: 'media.removed' },
+      unhide: {
+        from: ['hidden'],
+        patch: { status: 'ready', hiddenAt: null },
+        event: 'media.ready',
+      },
+      delete: {
+        from: ['uploading', 'processing', 'ready', 'hidden', 'failed'],
+        patch: { status: 'deleted', deletedAt: now },
+        event: 'media.removed',
+      },
+    } as const;
+    const move = moves[op.data];
 
-    for (const m of targets) {
+    let changed = 0;
+    for (const id of new Set(ids.data)) {
+      const m = await scope.media.update(id, move.patch, { from: [...move.from] });
       if (!m) continue;
-      if (op.data === 'hide' && m.status === 'ready') {
-        await scope.media.update(m.id, { status: 'hidden', hiddenAt: now });
-        await publishMediaEvent(db(), {
-          type: 'media.removed',
-          weddingId: wedding.id,
-          mediaId: m.id,
-        });
-      } else if (op.data === 'unhide' && m.status === 'hidden') {
-        await scope.media.update(m.id, { status: 'ready', hiddenAt: null });
-        await publishMediaEvent(db(), {
-          type: 'media.ready',
-          weddingId: wedding.id,
-          mediaId: m.id,
-        });
-      } else if (op.data === 'delete') {
-        await scope.media.update(m.id, { status: 'deleted', deletedAt: now });
-        await publishMediaEvent(db(), {
-          type: 'media.removed',
-          weddingId: wedding.id,
-          mediaId: m.id,
-        });
-        await enqueue(QUEUES.mediaPurge, { weddingId: wedding.id, mediaId: m.id });
-      } else continue;
+      changed++;
+      await publishMediaEvent(db(), { type: move.event, weddingId: wedding.id, mediaId: m.id });
+      if (op.data === 'delete') await enqueue(...mediaPurgeRequest(wedding.id, m.id));
       await scope.audit({
         actorType: 'user',
         actorId: user.id,
@@ -243,7 +238,7 @@ export async function moderateMediaAction(_: ActionState, form: FormData): Promi
       });
     }
     const labels = { hide: 'Ukryto', unhide: 'Przywrócono', delete: 'Usunięto' };
-    return { ok: `${labels[op.data]}: ${targets.length}.` };
+    return { ok: `${labels[op.data]}: ${changed}.` };
   });
 }
 
@@ -395,7 +390,11 @@ export async function requestExportAction(_: ActionState, form: FormData): Promi
       if (Date.now() - latest.createdAt.getTime() < EXPORT_GIVE_UP_MS) {
         return { error: 'Paczka jest już przygotowywana.' };
       }
-      await scope.exports.update(latest.id, { status: 'failed', error: 'timeout' });
+      await scope.exports.update(
+        latest.id,
+        { status: 'failed', error: EXPORT_SUPERSEDED },
+        { from: ['pending', 'running'] },
+      );
     }
     const row = await scope.exports.create(user.id);
     await enqueue(QUEUES.weddingExport, { weddingId: wedding.id, exportId: row.id, notify: true });

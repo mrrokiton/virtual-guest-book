@@ -1,4 +1,4 @@
-import { canGuestDeleteMedia, QUEUES } from '@vgb/core';
+import { canGuestDeleteMedia, mediaPurgeRequest } from '@vgb/core';
 import { publishMediaEvent, weddingScope } from '@vgb/db';
 import { enqueue } from '@/lib/jobs';
 import { resolveGuest } from '@/lib/guest';
@@ -26,13 +26,18 @@ export async function DELETE(
     if (!media || media.status === 'deleted' || !canGuestDeleteMedia(media, guest.session.id)) {
       return jsonError(404, 'Nie znaleziono pliku.');
     }
-    await scope.media.update(media.id, { status: 'deleted', deletedAt: new Date() });
+    const deleted = await scope.media.update(
+      media.id,
+      { status: 'deleted', deletedAt: new Date() },
+      { from: [media.status] },
+    );
+    if (!deleted) return jsonError(409, 'Plik zmienił się w międzyczasie. Odśwież stronę.');
     await publishMediaEvent(db(), {
       type: 'media.removed',
       weddingId: guest.wedding.id,
       mediaId: media.id,
     });
-    await enqueue(QUEUES.mediaPurge, { weddingId: guest.wedding.id, mediaId: media.id });
+    await enqueue(...mediaPurgeRequest(guest.wedding.id, media.id));
     await scope.audit({
       actorType: 'guest',
       actorId: guest.session.id,

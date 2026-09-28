@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt } from 'drizzle-orm';
 import type { Database } from './client';
 import { media } from './schema';
 
@@ -18,13 +18,15 @@ export function listStaleUploads(db: Database, olderThan: Date, limit = 500) {
 
 /**
  * Files that reached storage or Stream but never finished processing: a photo job that ran out
- * of retries, a lost enqueue, a Stream webhook that never came. They are retried, never dropped.
+ * of retries, a lost enqueue, a Stream webhook that never came. Oldest first, so a large backlog
+ * cannot starve the items that are closest to giving up.
  */
 export function listStuckProcessing(db: Database, olderThan: Date, limit = 200) {
   return db
     .select()
     .from(media)
     .where(and(eq(media.status, 'processing'), lt(media.createdAt, olderThan)))
+    .orderBy(asc(media.createdAt))
     .limit(limit);
 }
 

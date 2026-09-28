@@ -25,7 +25,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'wedding.pin_rotated': 'Zmieniono PIN',
   'wedding.deletion_requested': 'Zlecono usunięcie',
   'wedding.restored': 'Anulowano usunięcie',
-  'wedding.read_only': 'Zamknięto dodawanie zdjęć',
+  'wedding.became_read_only': 'Zamknięto dodawanie zdjęć',
   'wedding.archived': 'Zarchiwizowano galerię',
   'wedding.deletion_scheduled': 'Zaplanowano automatyczne usunięcie',
   'wedding.approved': 'Zatwierdzone przez administratora platformy',

@@ -1,6 +1,6 @@
-import { mediaStorageKey } from '@vgb/core';
+import { EXPORT_SUPERSEDED, mediaStorageKey } from '@vgb/core';
 import { weddingScope } from '@vgb/db';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestContext, makeWedding, type TestContext } from '../test-utils';
 import { exportKey, exportWedding } from './export';
 
@@ -66,5 +66,49 @@ describe('exportWedding', () => {
     expect(zip).toContain('PHOTO-BYTES');
     expect(zip).toContain('VIDEO-BYTES');
     expect(ctx.mails.some((m) => m.subject.startsWith('Paczka zdjęć gotowa'))).toBe(true);
+    expect(done?.notifiedAt).not.toBeNull();
+  });
+
+  const readyMail = () => ctx.mails.filter((m) => m.subject.startsWith('Paczka zdjęć gotowa'));
+
+  it('sends the e-mail on retry when the ZIP was built but notifying failed', async () => {
+    const { wedding } = await makeWedding(ctx.db, { eventDate: new Date('2026-07-04T14:00:00Z') });
+    const scope = weddingScope(ctx.db, wedding.id);
+    const row = await scope.exports.create(null);
+    const job = { weddingId: wedding.id, exportId: row.id, notify: true };
+
+    const send = vi.spyOn(ctx.boss, 'send').mockRejectedValueOnce(new Error('db down'));
+    await expect(exportWedding(ctx, job)).rejects.toThrow('db down');
+    send.mockRestore();
+    expect((await scope.exports.get(row.id))?.status).toBe('ready');
+
+    const before = readyMail().length;
+    await exportWedding(ctx, job);
+    expect(readyMail().length).toBe(before + 1);
+    await exportWedding(ctx, job);
+    expect(readyMail().length).toBe(before + 1);
+  });
+
+  it('ignores a late job for an export the owner replaced', async () => {
+    const { wedding } = await makeWedding(ctx.db, { eventDate: new Date('2026-07-04T14:00:00Z') });
+    const scope = weddingScope(ctx.db, wedding.id);
+    const row = await scope.exports.create(null);
+    await scope.exports.update(row.id, { status: 'failed', error: EXPORT_SUPERSEDED });
+
+    await exportWedding(ctx, { weddingId: wedding.id, exportId: row.id, notify: true });
+    expect(await scope.exports.get(row.id)).toMatchObject({ status: 'failed' });
+    expect(ctx.memory.objects.has(exportKey(wedding.id, row.id))).toBe(false);
+  });
+
+  it('fails instead of hanging when the upload breaks', async () => {
+    const { wedding } = await makeWedding(ctx.db, { eventDate: new Date('2026-07-04T14:00:00Z') });
+    const scope = weddingScope(ctx.db, wedding.id);
+    const row = await scope.exports.create(null);
+    vi.spyOn(ctx.memory, 'putStream').mockRejectedValueOnce(new Error('R2 unavailable'));
+
+    await expect(
+      exportWedding(ctx, { weddingId: wedding.id, exportId: row.id, notify: false }),
+    ).rejects.toThrow('R2 unavailable');
+    expect(await scope.exports.get(row.id)).toMatchObject({ status: 'failed' });
   });
 });

@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { computeSchedule, generateSlug, type PlanId } from '@vgb/core';
+import { computeSchedule, generateSlug, QUEUES, type PlanId } from '@vgb/core';
 import { createWedding, ensureTenantForUser, type Database } from '@vgb/db';
 import { createTestDb, insertTestUser } from '@vgb/db/testing';
 import {
@@ -85,6 +85,7 @@ export async function createTestContext(): Promise<TestContext> {
     boss: {
       send: async (queue: string, data: unknown, options?: unknown) => {
         sent.push({ queue, data, options });
+        if (queue === QUEUES.sendEmail) mails.push(data as EmailMessage);
         return 'job-id';
       },
     } as unknown as PgBoss,

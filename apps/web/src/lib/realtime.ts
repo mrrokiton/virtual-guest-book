@@ -67,7 +67,10 @@ class RealtimeHub {
     client.on('error', lost);
     client.on('end', lost);
     client.on('notification', (msg) => {
-      if (msg.channel === MEDIA_CHANNEL) void this.dispatch(parseMediaEvent(msg.payload));
+      if (msg.channel !== MEDIA_CHANNEL) return;
+      this.dispatch(parseMediaEvent(msg.payload)).catch((err) =>
+        console.error('[realtime] dispatch failed', err),
+      );
     });
     try {
       await client.connect();

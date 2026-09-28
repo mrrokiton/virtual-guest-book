@@ -97,6 +97,24 @@ describe('processPhoto', () => {
     expect(ctx.memory.objects.has(p.media.originalKey!)).toBe(true);
   });
 
+  it('keeps the winning run intact when an overlapping run loses', async () => {
+    const p = await processingPhoto(await jpeg());
+    const realGet = ctx.memory.getBuffer.bind(ctx.memory);
+    // A redelivered job runs to completion while the first one is between download and upload.
+    vi.spyOn(ctx.memory, 'getBuffer').mockImplementationOnce(async (key, opts) => {
+      const buf = await realGet(key, opts);
+      await processPhoto(ctx, p.job);
+      return buf;
+    });
+    await processPhoto(ctx, p.job);
+
+    const row = (await p.get())!;
+    expect(row.status).toBe('ready');
+    const keys = Object.values(row.variants);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) expect(ctx.memory.objects.has(key!)).toBe(true);
+  });
+
   it('marks undecodable bytes as failed', async () => {
     const p = await processingPhoto(
       Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(64)]),

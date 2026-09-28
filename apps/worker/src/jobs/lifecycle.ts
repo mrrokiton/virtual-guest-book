@@ -2,9 +2,14 @@ import {
   addDays,
   DELETION_REMINDER_DAYS,
   dueTransition,
+  MAX_PHOTO_REDRIVES,
+  mediaPurgeRequest,
   QUEUES,
+  transitionDeadlines,
   type DeletionReminderJob,
   type LifecycleEvent,
+  type PhotoProcessJob,
+  type SendEmailJob,
   type WeddingExportJob,
   type WeddingPurgeJob,
 } from '@vgb/core';
@@ -30,17 +35,28 @@ import { dashboardUrl, type Context } from '../context';
 const STALE_UPLOAD_HOURS = 24;
 /** Photo retries and Stream encoding normally finish within minutes. */
 const STUCK_PROCESSING_MINUTES = 60;
+/** Stream still reporting "processing" after this long will not finish. */
+const STUCK_VIDEO_HOURS = 24;
 const PURGE_BACKLOG_HOURS = 1;
 /** A wedding can at most pass active -> read_only -> archived -> pending_deletion in one tick. */
 const MAX_STEPS = 4;
 
-async function notifyOwners(
+/** Each message is its own retried job, so one failed delivery neither blocks nor repeats others. */
+export async function queueEmail(ctx: Pick<Context, 'boss'>, message: SendEmailJob): Promise<void> {
+  await ctx.boss.send(QUEUES.sendEmail, message);
+}
+
+export async function sendEmail(ctx: Context, message: SendEmailJob): Promise<void> {
+  await ctx.mailer.send(message);
+}
+
+export async function notifyOwners(
   ctx: Context,
-  w: Wedding,
-  build: (to: string) => Parameters<Context['mailer']['send']>[0],
+  w: Pick<Wedding, 'id'>,
+  build: (to: string) => SendEmailJob,
 ) {
   const owners = await listOwnerEmails(ctx.db, w.id);
-  await Promise.all(owners.map((o) => ctx.mailer.send(build(o.email))));
+  for (const o of owners) await queueEmail(ctx, build(o.email));
 }
 
 export async function scheduleDeletionReminder(
@@ -76,6 +92,7 @@ async function onTransition(ctx: Context, w: Wedding, event: LifecycleEvent): Pr
       break;
     }
     case 'deletion_scheduled':
+      await scheduleDeletionReminder(ctx, w.id, event.purgeAt, ctx.now());
       await notifyOwners(ctx, w, (to) =>
         emails.deletionScheduled(to, {
           weddingName: w.name,
@@ -84,7 +101,6 @@ async function onTransition(ctx: Context, w: Wedding, event: LifecycleEvent): Pr
           automatic: event.automatic,
         }),
       );
-      await scheduleDeletionReminder(ctx, w.id, event.purgeAt, ctx.now());
       break;
     default:
       break;
@@ -102,7 +118,9 @@ export async function advanceWedding(ctx: Context, wedding: Wedding): Promise<vo
       await ctx.boss.send(QUEUES.weddingPurge, job, { singletonKey: current.id });
       return;
     }
-    const next = await applyWeddingTransition(ctx.db, current.id, current.status, t);
+    const next = await applyWeddingTransition(ctx.db, current.id, current.status, t, {
+      deadlines: transitionDeadlines(toLifecycle(current), now),
+    });
     if (!next) return; // Changed concurrently (e.g. the couple restored it); next tick re-evaluates.
     await onTransition(ctx, next, t.event);
     current = next;
@@ -144,17 +162,17 @@ export async function lifecycleTick(ctx: Context): Promise<void> {
     ctx.db,
     new Date(now.getTime() - PURGE_BACKLOG_HOURS * 3600_000),
   )) {
-    await sendPurge(ctx, m);
+    try {
+      await sendPurge(ctx, m);
+    } catch (err) {
+      console.error('[lifecycle] purge backlog %s failed', m.id, err);
+    }
   }
   await pruneRateLimits(ctx.db);
 }
 
 function sendPurge(ctx: Context, m: Pick<Media, 'id' | 'weddingId'>) {
-  return ctx.boss.send(
-    QUEUES.mediaPurge,
-    { weddingId: m.weddingId, mediaId: m.id },
-    { singletonKey: m.id },
-  );
+  return ctx.boss.send(...mediaPurgeRequest(m.weddingId, m.id));
 }
 
 async function expireUpload(ctx: Context, m: Media): Promise<void> {
@@ -175,17 +193,26 @@ async function expireUpload(ctx: Context, m: Media): Promise<void> {
   if (failed) await sendPurge(ctx, m);
 }
 
-/** Re-drives an item stuck in `processing`; the bytes are only dropped once they are gone. */
+async function fail(ctx: Context, m: Media, reason: string): Promise<void> {
+  if (await markMediaFailed(ctx.db, m, reason)) await sendPurge(ctx, m);
+}
+
+/**
+ * Re-drives an item stuck in `processing` a bounded number of times, so one file that keeps
+ * crashing the decoder cannot burn worker time forever. The attempt counter only moves when
+ * pg-boss actually accepts a new job (`send` returns null while the previous one is still live).
+ */
 export async function reconcileProcessing(ctx: Context, m: Media): Promise<void> {
   if (m.kind === 'photo') {
-    if (!m.originalKey) {
-      if (await markMediaFailed(ctx.db, m, 'missing_original')) await sendPurge(ctx, m);
-      return;
-    }
-    await ctx.boss.send(
-      QUEUES.photoProcess,
-      { weddingId: m.weddingId, mediaId: m.id },
-      { singletonKey: m.id },
+    if (!m.originalKey) return fail(ctx, m, 'missing_original');
+    if (m.reprocessAttempts >= MAX_PHOTO_REDRIVES) return fail(ctx, m, 'processing_exhausted');
+    const job: PhotoProcessJob = { weddingId: m.weddingId, mediaId: m.id };
+    // null = this photo already has a queued or active job; do not burn a redrive slot.
+    if (!(await ctx.boss.send(QUEUES.photoProcess, job, { singletonKey: m.id }))) return;
+    await weddingScope(ctx.db, m.weddingId).media.update(
+      m.id,
+      { reprocessAttempts: m.reprocessAttempts + 1 },
+      { from: ['processing'] },
     );
     return;
   }
@@ -194,7 +221,9 @@ export async function reconcileProcessing(ctx: Context, m: Media): Promise<void>
     await ctx.video.enableDownload(m);
     await markVideoReady(ctx.db, m, state, ctx.now());
   } else if (state.state === 'failed') {
-    if (await markMediaFailed(ctx.db, m, state.reason)) await sendPurge(ctx, m);
+    await fail(ctx, m, state.reason);
+  } else if (ctx.now().getTime() - m.createdAt.getTime() > STUCK_VIDEO_HOURS * 3600_000) {
+    await fail(ctx, m, 'processing_timeout');
   }
 }
 

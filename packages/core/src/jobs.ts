@@ -5,6 +5,7 @@ export const QUEUES = {
   weddingPurge: 'wedding-purge',
   deletionReminder: 'deletion-reminder',
   lifecycleTick: 'lifecycle-tick',
+  sendEmail: 'send-email',
 } as const;
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
@@ -44,7 +45,20 @@ export const QUEUE_CONFIG: Record<QueueName, QueueConfig> = {
     expireInSeconds: 300,
   },
   [QUEUES.lifecycleTick]: { retryLimit: 0, expireInSeconds: 600, policy: 'singleton' },
+  [QUEUES.sendEmail]: {
+    retryLimit: 8,
+    retryDelay: 30,
+    retryBackoff: true,
+    retryDelayMax: 3600,
+    expireInSeconds: 120,
+  },
 };
+
+/** Set on an export the owner gave up on; a late job for it must not revive it. */
+export const EXPORT_SUPERSEDED = 'superseded';
+
+/** Photo jobs re-sent this many times by the lifecycle tick before the item is failed. */
+export const MAX_PHOTO_REDRIVES = 3;
 
 /** Owners get a last reminder this long before a scheduled purge. */
 export const DELETION_REMINDER_DAYS = 3;
@@ -59,6 +73,12 @@ export interface MediaPurgeJob {
   mediaId: string;
 }
 
+/** Arguments for `send`: one purge job per item, however many places ask for it. */
+export function mediaPurgeRequest(weddingId: string, mediaId: string) {
+  const data: MediaPurgeJob = { weddingId, mediaId };
+  return [QUEUES.mediaPurge, data, { singletonKey: mediaId }] as const;
+}
+
 export interface WeddingExportJob {
   weddingId: string;
   exportId: string;
@@ -67,6 +87,13 @@ export interface WeddingExportJob {
 
 export interface WeddingPurgeJob {
   weddingId: string;
+}
+
+export interface SendEmailJob {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
 }
 
 export interface DeletionReminderJob {

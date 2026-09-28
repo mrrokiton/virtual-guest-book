@@ -1,4 +1,4 @@
-import { guestCanUpload, guestCanView, planLimits } from '@vgb/core';
+import { guestCanUpload, guestCanView, planLimits, VIDEO_DURATION_TOLERANCE_S } from '@vgb/core';
 import { weddingScope, type Wedding } from '@vgb/db';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
@@ -119,6 +119,7 @@ export default async function GuestPage({ params }: Props) {
           maxPhotoBytes: limits.maxPhotoBytes,
           maxVideoBytes: limits.maxVideoBytes,
           maxVideoSeconds: limits.maxVideoSeconds,
+          videoToleranceSeconds: VIDEO_DURATION_TOLERANCE_S,
         }}
         initialItems={page.items.map((m) => toGalleryItem(slug, m, hasVideoThumb))}
         initialCursor={page.nextCursor}

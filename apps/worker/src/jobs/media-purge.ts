@@ -1,4 +1,4 @@
-import type { MediaPurgeJob } from '@vgb/core';
+import { mediaStoragePrefix, type MediaPurgeJob } from '@vgb/core';
 import { weddingScope } from '@vgb/db';
 import type { Context } from '../context';
 
@@ -15,7 +15,13 @@ export async function purgeMedia(ctx: Context, job: MediaPurgeJob): Promise<void
     Boolean(k),
   );
   await Promise.all(keys.map((k) => ctx.storage.delete(k)));
+  // Also catches variants written by a processing attempt that lost the race to record them.
+  await ctx.storage.deletePrefix(mediaStoragePrefix(job.weddingId, media.id));
   if (media.kind === 'video' && media.videoUid) await ctx.video.delete(media);
 
-  await scope.media.update(media.id, { purgedAt: ctx.now(), originalKey: null, variants: {} });
+  await scope.media.update(
+    media.id,
+    { purgedAt: ctx.now(), originalKey: null, variants: {} },
+    { from: ['deleted', 'failed'] },
+  );
 }

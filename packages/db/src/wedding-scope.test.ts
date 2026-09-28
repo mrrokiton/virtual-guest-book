@@ -181,3 +181,25 @@ describe('status guards', () => {
     expect((await scope.media.get(video.id))?.status).toBe('hidden');
   });
 });
+
+describe('usage', () => {
+  it('stops counting an upload the browser abandoned', async () => {
+    const { wedding } = await makeWedding('Usage');
+    const scope = weddingScope(db, wedding.id);
+    await scope.media.create({
+      kind: 'photo',
+      status: 'uploading',
+      declaredContentType: 'image/jpeg',
+      declaredSizeBytes: 10,
+    });
+    await scope.media.create({
+      kind: 'video',
+      status: 'ready',
+      declaredContentType: 'video/mp4',
+      declaredSizeBytes: 10,
+    });
+    expect(await scope.media.usage()).toEqual({ total: 2, videos: 1 });
+    const later = new Date(Date.now() + 2 * 3600_000);
+    expect(await scope.media.usage(later)).toEqual({ total: 1, videos: 1 });
+  });
+});

@@ -36,6 +36,9 @@ export const PLANS: Record<PlanId, PlanLimits> = {
   },
 };
 
+/** Browsers report durations a bit off; both the client and the server allow this much. */
+export const VIDEO_DURATION_TOLERANCE_S = 1.5;
+
 export function planLimits(plan: PlanId): PlanLimits {
   return PLANS[plan];
 }

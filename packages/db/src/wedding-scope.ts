@@ -1,4 +1,17 @@
-import { and, count, desc, eq, inArray, isNull, notInArray, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import type { MediaStatus } from '@vgb/core';
 import type { Database } from './client';
 import { decodeCursor, encodeCursor } from './cursor';
@@ -33,6 +46,7 @@ export interface AuditEntry {
 
 const MAX_PAGE = 100;
 const COUNTED_STATUSES: MediaStatus[] = ['uploading', 'processing', 'ready', 'hidden'];
+const UPLOAD_COUNTED_FOR_MS = 60 * 60 * 1000;
 
 /**
  * The only way application code reads or writes per-wedding rows. Every query built here is
@@ -144,11 +158,18 @@ export function weddingScope(db: Database, weddingId: string) {
         );
       },
 
-      async usage(): Promise<{ total: number; videos: number }> {
+      /** Uploads that never finished stop counting after a while so they cannot block the quota. */
+      async usage(now = new Date()): Promise<{ total: number; videos: number }> {
+        const abandonedBefore = new Date(now.getTime() - UPLOAD_COUNTED_FOR_MS);
         const rows = await db
           .select({ kind: media.kind, n: count() })
           .from(media)
-          .where(mediaIn(inArray(media.status, COUNTED_STATUSES)))
+          .where(
+            mediaIn(
+              inArray(media.status, COUNTED_STATUSES),
+              or(ne(media.status, 'uploading'), gt(media.createdAt, abandonedBefore)),
+            ),
+          )
           .groupBy(media.kind);
         const total = rows.reduce((sum, r) => sum + r.n, 0);
         return { total, videos: rows.find((r) => r.kind === 'video')?.n ?? 0 };
@@ -286,11 +307,23 @@ export function weddingScope(db: Database, weddingId: string) {
         return row ?? null;
       },
 
-      async update(id: string, patch: Partial<typeof exports.$inferInsert>): Promise<void> {
-        await db
+      async update(
+        id: string,
+        patch: Partial<typeof exports.$inferInsert>,
+        opts: { from?: ExportRow['status'][] } = {},
+      ): Promise<ExportRow | null> {
+        const [row] = await db
           .update(exports)
           .set(patch)
-          .where(and(eq(exports.weddingId, weddingId), eq(exports.id, id)));
+          .where(
+            and(
+              eq(exports.weddingId, weddingId),
+              eq(exports.id, id),
+              opts.from ? inArray(exports.status, opts.from) : undefined,
+            ),
+          )
+          .returning();
+        return row ?? null;
       },
     },
 

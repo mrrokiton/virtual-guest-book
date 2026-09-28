@@ -98,7 +98,9 @@ fly deploy . --config apps/web/fly.toml --dockerfile apps/web/Dockerfile
 ```
 
 Wycofanie: `fly releases -a vgb-web`, potem `fly deploy --image <poprzedni obraz>`. Migracje są
-tylko dodające, więc poprzednia wersja działa na nowym schemacie.
+wstecznie zgodne (dodają kolumny albo poszerzają typ), więc poprzednia wersja działa na nowym
+schemacie. Zmiana typu kolumny blokuje tabelę na czas przepisania; migracja łamiąca zgodność
+wymaga wdrożenia w dwóch krokach.
 
 ## Konfiguracja od zera
 

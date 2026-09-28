@@ -4,6 +4,7 @@ import {
   type DeletionReminderJob,
   type MediaPurgeJob,
   type PhotoProcessJob,
+  type SendEmailJob,
   type WeddingExportJob,
   type WeddingPurgeJob,
 } from '@vgb/core';
@@ -11,7 +12,7 @@ import * as Sentry from '@sentry/node';
 import { PgBoss, type Job } from 'pg-boss';
 import { createServices, type Context } from './context';
 import { exportWedding } from './jobs/export';
-import { lifecycleTick, sendDeletionReminder } from './jobs/lifecycle';
+import { lifecycleTick, sendDeletionReminder, sendEmail } from './jobs/lifecycle';
 import { purgeMedia } from './jobs/media-purge';
 import { processPhoto } from './jobs/photo';
 import { purgeWedding } from './jobs/wedding-purge';
@@ -65,6 +66,11 @@ async function main() {
   await boss.work<DeletionReminderJob>(
     QUEUES.deletionReminder,
     handle('reminder', sendDeletionReminder),
+  );
+  await boss.work<SendEmailJob>(
+    QUEUES.sendEmail,
+    { localConcurrency: 2 },
+    handle('email', sendEmail),
   );
   await boss.work(
     QUEUES.lifecycleTick,

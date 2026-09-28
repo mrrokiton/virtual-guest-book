@@ -103,6 +103,9 @@ export class Storage {
       throw new ObjectTooLargeError(key, res.ContentLength ?? 0);
     }
     const bytes = await res.Body.transformToByteArray();
+    if (opts.maxBytes !== undefined && bytes.length > opts.maxBytes) {
+      throw new ObjectTooLargeError(key, bytes.length);
+    }
     return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
 

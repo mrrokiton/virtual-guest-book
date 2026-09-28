@@ -96,7 +96,11 @@ export const PHOTO_VARIANTS = {
 export type PhotoVariant = keyof typeof PHOTO_VARIANTS;
 
 export function mediaStorageKey(weddingId: string, mediaId: string, name: string): string {
-  return `weddings/${weddingId}/media/${mediaId}/${name}`;
+  return `${mediaStoragePrefix(weddingId, mediaId)}${name}`;
+}
+
+export function mediaStoragePrefix(weddingId: string, mediaId: string): string {
+  return `weddings/${weddingId}/media/${mediaId}/`;
 }
 
 export function weddingStoragePrefix(weddingId: string): string {

@@ -19,6 +19,7 @@ export interface UploadLimits {
   maxPhotoBytes: number;
   maxVideoBytes: number;
   maxVideoSeconds: number;
+  videoToleranceSeconds: number;
 }
 
 export type TaskStatus = 'queued' | 'working' | 'done' | 'error';
@@ -47,6 +48,8 @@ export function useUploadQueue(
 ) {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const files = useRef(new Map<string, File>());
+  /** Media id issued for a task, reused by its retries. */
+  const slots = useRef(new Map<string, string>());
   const running = useRef(new Set<string>());
   const onUploadedRef = useRef(onUploaded);
   useEffect(() => {
@@ -75,7 +78,7 @@ export function useUploadQueue(
             );
           const duration = await readVideoDuration(file);
           if (duration === null) throw new UploadError('Nie udało się odczytać filmu.', false);
-          if (duration > limits.maxVideoSeconds + 1) {
+          if (duration > limits.maxVideoSeconds + limits.videoToleranceSeconds) {
             throw new UploadError(
               `Film może trwać maksymalnie ${limits.maxVideoSeconds} s.`,
               false,
@@ -92,8 +95,8 @@ export function useUploadQueue(
         }
         const contentType = body.type || contentTypeOf(file);
 
-        // A failed transfer restarts with a fresh upload slot; once the bytes are stored, only the
-        // completion call is retried.
+        // A failed transfer asks for a fresh upload URL for the same item (so retries do not eat
+        // into the gallery limit); once the bytes are stored, only the completion call is retried.
         let uploadedId: string | null = null;
         const attemptOnce = async (): Promise<string> => {
           if (!uploadedId) {
@@ -101,9 +104,15 @@ export function useUploadQueue(
               `/api/w/${slug}/uploads`,
               {
                 method: 'POST',
-                body: JSON.stringify({ contentType, size: body.size, durationSeconds }),
+                body: JSON.stringify({
+                  contentType,
+                  size: body.size,
+                  durationSeconds,
+                  retryOf: slots.current.get(key),
+                }),
               },
             );
+            slots.current.set(key, started.mediaId);
             await sendFile(started.upload, body, (f) =>
               patch(key, { progress: Math.min(0.97, f) }),
             );
@@ -130,6 +139,7 @@ export function useUploadQueue(
         patch(key, { status: 'done', progress: 1, mediaId });
         onUploadedRef.current(mediaId);
         files.current.delete(key);
+        slots.current.delete(key);
       } catch (err) {
         patch(key, {
           status: 'error',
@@ -186,6 +196,7 @@ export function useUploadQueue(
         if (t.status === 'done' || t.status === 'error') {
           if (t.previewUrl) URL.revokeObjectURL(t.previewUrl);
           files.current.delete(t.key);
+          slots.current.delete(t.key);
         }
       }
       return prev.filter((t) => t.status === 'queued' || t.status === 'working');

@@ -4,6 +4,7 @@ import {
   kindForContentType,
   mediaStorageKey,
   planLimits,
+  VIDEO_DURATION_TOLERANCE_S,
 } from '@vgb/core';
 import { hitRateLimit, weddingScope } from '@vgb/db';
 import { z } from 'zod';
@@ -15,8 +16,6 @@ export const dynamic = 'force-dynamic';
 
 const MAX_UPLOADS_PER_SESSION = 150;
 const UPLOAD_WINDOW_MS = 10 * 60 * 1000;
-/** Clients report duration from the file's metadata; allow for rounding. */
-const DURATION_TOLERANCE_S = 1.5;
 /**
  * The client PUTs right after receiving the URL and asks for a new one on retry. Short, because
  * the URL could otherwise replace the object after /complete checked its size.
@@ -27,6 +26,8 @@ const body = z.object({
   contentType: z.string().max(100),
   size: z.number().int().positive(),
   durationSeconds: z.number().positive().max(3600).optional(),
+  /** Media id from an earlier attempt for the same file; its slot is reused if still open. */
+  retryOf: z.uuid().optional(),
 });
 
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
@@ -41,14 +42,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 
     const parsed = body.safeParse(await readJson(req));
     if (!parsed.success) return jsonError(400, 'Nieprawidłowe dane pliku.');
-    const { contentType, size, durationSeconds } = parsed.data;
+    const { contentType, size, durationSeconds, retryOf } = parsed.data;
 
     const kind = kindForContentType(contentType);
     if (!kind) throw new DomainError('unsupported_media', 'Ten format pliku nie jest obsługiwany.');
 
     const limits = planLimits(wedding.plan);
     const scope = weddingScope(db(), wedding.id);
-    const usage = await scope.media.usage();
+    const previous = retryOf ? await scope.media.get(retryOf) : null;
+    const reused =
+      previous &&
+      previous.guestSessionId === session.id &&
+      previous.status === 'uploading' &&
+      previous.kind === kind
+        ? previous
+        : null;
+    // A retry already holds its place in the limits.
+    const usage = reused ? { total: 0, videos: 0 } : await scope.media.usage();
     if (usage.total >= limits.maxMediaPerWedding) {
       throw new DomainError('limit_exceeded', 'Galeria osiągnęła limit plików.');
     }
@@ -67,7 +77,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
           `Film jest za duży (max ${limits.maxVideoBytes / 1024 / 1024} MB).`,
         );
       }
-      if (!durationSeconds || durationSeconds > limits.maxVideoSeconds + DURATION_TOLERANCE_S) {
+      if (
+        !durationSeconds ||
+        durationSeconds > limits.maxVideoSeconds + VIDEO_DURATION_TOLERANCE_S
+      ) {
         throw new DomainError(
           'limit_exceeded',
           `Film może trwać maksymalnie ${limits.maxVideoSeconds} s.`,
@@ -83,19 +96,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       );
     }
 
-    const media = await scope.media.create({
-      kind,
-      status: 'uploading',
+    const declared = {
       declaredContentType: contentType,
       declaredSizeBytes: size,
       durationSeconds: durationSeconds ?? null,
-      guestSessionId: session.id,
-      uploaderName: session.displayName,
-    });
+    };
+    const media = reused
+      ? await scope.media.update(reused.id, declared, { from: ['uploading'] })
+      : await scope.media.create({
+          kind,
+          status: 'uploading',
+          ...declared,
+          guestSessionId: session.id,
+          uploaderName: session.displayName,
+        });
+    if (!media) return jsonError(409, 'Ten plik jest już przetwarzany.');
 
     if (kind === 'photo') {
       const key = mediaStorageKey(wedding.id, media.id, 'upload');
-      await scope.media.update(media.id, { originalKey: key });
+      if (media.originalKey !== key) await scope.media.update(media.id, { originalKey: key });
       return Response.json({
         mediaId: media.id,
         upload: {
@@ -106,6 +125,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       });
     }
 
+    // The earlier direct upload may be half-written; start a new one and drop the old.
+    if (media.videoUid) {
+      await video()
+        .delete(media)
+        .catch((err) => console.error('[uploads] could not drop stale video %s', media.id, err));
+    }
     const upload = await video().createUpload({
       weddingId: wedding.id,
       mediaId: media.id,

@@ -119,6 +119,26 @@ export function dueTransition(w: WeddingLifecycle, now: Date): Transition | null
   }
 }
 
+/**
+ * Latest dates that still make the time-driven transition from `w.status` due at `now`. Applying
+ * the transition with these as `column <= value` stops it if the couple moved the dates meanwhile.
+ */
+export function transitionDeadlines(
+  w: WeddingLifecycle,
+  now: Date,
+): { readOnlyAt?: Date; archiveAt?: Date } {
+  switch (w.status) {
+    case 'active':
+      return { readOnlyAt: now };
+    case 'read_only':
+      return { archiveAt: now };
+    case 'archived':
+      return { archiveAt: addDays(now, -planLimits(w.plan).archiveDays) };
+    default:
+      return {};
+  }
+}
+
 export function activate(w: WeddingLifecycle, now: Date): { to: 'active' } {
   if (w.status !== 'draft') {
     throw new DomainError('invalid_state', 'Tylko wesele w stanie szkicu można aktywować.');

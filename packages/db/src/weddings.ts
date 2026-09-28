@@ -113,16 +113,25 @@ export async function applyWeddingTransition(
     statusBeforeDeletion?: WeddingStatus | null;
     archiveAt?: Date;
   },
+  opts: { deadlines?: { readOnlyAt?: Date; archiveAt?: Date } } = {},
 ): Promise<Wedding | null> {
   const patch: WeddingPatch = { status: transition.to, updatedAt: new Date() };
   if (transition.purgeAt !== undefined) patch.purgeAt = transition.purgeAt;
   if (transition.archiveAt !== undefined) patch.archiveAt = transition.archiveAt;
   if (transition.statusBeforeDeletion !== undefined)
     patch.statusBeforeDeletion = transition.statusBeforeDeletion;
+  const d = opts.deadlines ?? {};
   const [row] = await db
     .update(weddings)
     .set(patch)
-    .where(and(eq(weddings.id, id), eq(weddings.status, from)))
+    .where(
+      and(
+        eq(weddings.id, id),
+        eq(weddings.status, from),
+        d.readOnlyAt ? lte(weddings.readOnlyAt, d.readOnlyAt) : undefined,
+        d.archiveAt ? lte(weddings.archiveAt, d.archiveAt) : undefined,
+      ),
+    )
     .returning();
   return row ?? null;
 }

@@ -3,14 +3,16 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import {
   addDays,
   DELETION_GRACE_DAYS,
+  EXPORT_SUPERSEDED,
   planLimits,
   weddingStoragePrefix,
   type WeddingExportJob,
 } from '@vgb/core';
-import { getWeddingById, listOwnerEmails, weddingScope, type Media } from '@vgb/db';
+import { getWeddingById, weddingScope, type Media } from '@vgb/db';
 import { emails } from '@vgb/services';
 import { ZipArchive } from 'archiver';
 import { dashboardUrl, type Context } from '../context';
+import { notifyOwners } from './lifecycle';
 
 const VIDEO_EXT: Record<string, string> = {
   'video/quicktime': 'mov',
@@ -69,26 +71,57 @@ async function openSource(ctx: Context, m: Media): Promise<Readable | null> {
 export async function exportWedding(ctx: Context, job: WeddingExportJob): Promise<void> {
   const scope = weddingScope(ctx.db, job.weddingId);
   const row = await scope.exports.get(job.exportId);
-  if (!row || row.status === 'ready') return;
+  if (!row || (row.status === 'failed' && row.error === EXPORT_SUPERSEDED)) return;
   const wedding = await getWeddingById(ctx.db, job.weddingId);
   if (!wedding || wedding.status === 'deleted') return;
 
-  await scope.exports.update(row.id, { status: 'running', error: null });
+  // A retry after a failed e-mail step finds the ZIP ready and only sends the e-mail.
+  if (row.status !== 'ready' && !(await buildZip(ctx, wedding.id, row.id))) return;
+
+  if (job.notify && !row.notifiedAt) {
+    const availableUntil =
+      wedding.purgeAt ??
+      addDays(wedding.archiveAt, planLimits(wedding.plan).archiveDays + DELETION_GRACE_DAYS);
+    await notifyOwners(ctx, wedding, (to) =>
+      emails.exportReady(to, {
+        weddingName: wedding.name,
+        url: `${dashboardUrl(ctx.cfg, wedding.id)}#export`,
+        availableUntil,
+      }),
+    );
+    await scope.exports.update(row.id, { notifiedAt: ctx.now() });
+  }
+}
+
+/** False when the export was dropped meanwhile (wedding deleted, owner asked for a new one). */
+async function buildZip(ctx: Context, weddingId: string, exportId: string): Promise<boolean> {
+  const scope = weddingScope(ctx.db, weddingId);
+  const claimed = await scope.exports.update(
+    exportId,
+    { status: 'running', error: null },
+    { from: ['pending', 'running', 'failed'] },
+  );
+  if (!claimed) return false;
   const items = await scope.media.listForExport();
-  const key = exportKey(job.weddingId, row.id);
+  const key = exportKey(weddingId, exportId);
 
   const zip = new ZipArchive({ store: true });
   const body = new PassThrough();
   zip.pipe(body);
   const upload = ctx.storage.putStream(key, body, 'application/zip');
   const zipFailed = new Promise<never>((_, reject) => zip.on('error', reject));
+  // Settles only on failure: without it a rejected upload leaves `run` waiting for a drain forever.
+  const uploadFailed = upload.then(() => new Promise<never>(() => {}));
 
   let included = 0;
   const skipped: string[] = [];
   try {
     const run = (async () => {
       for (const [i, m] of items.entries()) {
-        const source = await openSource(ctx, m).catch(() => null);
+        const source = await openSource(ctx, m).catch((err) => {
+          console.error('[export] could not open media %s', m.id, err);
+          return null;
+        });
         if (!source) {
           skipped.push(m.id);
           continue;
@@ -104,53 +137,53 @@ export async function exportWedding(ctx: Context, job: WeddingExportJob): Promis
       await zip.finalize();
       await upload;
     })();
-    await Promise.race([run, zipFailed]);
+    run.catch(() => {}); // Observed through the race; after an abort it may reject late.
+    await Promise.race([run, zipFailed, uploadFailed]);
+
+    // The wedding may have been purged while we streamed; its prefix sweep can precede our upload.
+    const wedding = await getWeddingById(ctx.db, weddingId);
+    if (!wedding || wedding.status === 'deleted') {
+      await ctx.storage.delete(key);
+      return false;
+    }
     const info = await ctx.storage.head(key);
-    await scope.exports.update(row.id, {
-      status: 'ready',
-      objectKey: key,
-      sizeBytes: info?.size ?? null,
-      mediaCount: included,
-      completedAt: ctx.now(),
-      error: skipped.length
-        ? `Pominięto ${skipped.length} plików, których nie udało się pobrać.`
-        : null,
-    });
+    const ready = await scope.exports.update(
+      exportId,
+      {
+        status: 'ready',
+        objectKey: key,
+        sizeBytes: info?.size ?? null,
+        mediaCount: included,
+        completedAt: ctx.now(),
+        error: skipped.length
+          ? `Pominięto ${skipped.length} plików, których nie udało się pobrać.`
+          : null,
+      },
+      { from: ['running'] },
+    );
+    if (!ready) {
+      await ctx.storage.delete(key);
+      return false;
+    }
   } catch (err) {
     zip.abort();
     body.destroy();
     await upload.catch(() => {});
     await scope.exports
-      .update(row.id, {
-        status: 'failed',
-        error: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
-      })
-      .catch(() => {});
+      .update(
+        exportId,
+        { status: 'failed', error: err instanceof Error ? err.message.slice(0, 500) : 'unknown' },
+        { from: ['running'] },
+      )
+      .catch((e) => console.error('[export] could not mark %s failed', exportId, e));
     throw err;
   }
   await scope.audit({
     actorType: 'system',
     action: 'export.ready',
     targetType: 'export',
-    targetId: row.id,
+    targetId: exportId,
     metadata: { included, skipped: skipped.length },
   });
-
-  if (job.notify) {
-    const availableUntil =
-      wedding.purgeAt ??
-      addDays(wedding.archiveAt, planLimits(wedding.plan).archiveDays + DELETION_GRACE_DAYS);
-    const owners = await listOwnerEmails(ctx.db, wedding.id);
-    await Promise.all(
-      owners.map((o) =>
-        ctx.mailer.send(
-          emails.exportReady(o.email, {
-            weddingName: wedding.name,
-            url: `${dashboardUrl(ctx.cfg, wedding.id)}#export`,
-            availableUntil,
-          }),
-        ),
-      ),
-    );
-  }
+  return true;
 }

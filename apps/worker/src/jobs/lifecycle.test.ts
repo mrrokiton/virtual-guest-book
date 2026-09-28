@@ -1,8 +1,19 @@
-import { addDays, type MediaPurgeJob, QUEUES, type WeddingPurgeJob } from '@vgb/core';
+import {
+  addDays,
+  MAX_PHOTO_REDRIVES,
+  type MediaPurgeJob,
+  QUEUES,
+  type WeddingPurgeJob,
+} from '@vgb/core';
 import { getWeddingById, updateWedding, weddingScope } from '@vgb/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestContext, makeWedding, type TestContext } from '../test-utils';
-import { lifecycleTick, sendDeletionReminder } from './lifecycle';
+import {
+  advanceWedding,
+  lifecycleTick,
+  reconcileProcessing,
+  sendDeletionReminder,
+} from './lifecycle';
 import { purgeMedia } from './media-purge';
 import { purgeWedding } from './wedding-purge';
 
@@ -148,6 +159,93 @@ describe('wedding lifecycle with an accelerated clock', () => {
         s.queue === QUEUES.photoProcess && (s.data as { mediaId: string }).mediaId === photo.id,
     );
     expect(job?.options).toMatchObject({ singletonKey: photo.id });
+    expect((await scope.media.get(photo.id))?.reprocessAttempts).toBe(1);
+  });
+
+  it('does not burn a redrive while the photo job is still queued or running', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const photo = await scope.media.create({
+      kind: 'photo',
+      status: 'processing',
+      declaredContentType: 'image/jpeg',
+      declaredSizeBytes: 10,
+      originalKey: `weddings/${wedding.id}/media/live/original`,
+    });
+    vi.spyOn(ctx.boss, 'send').mockResolvedValueOnce(null);
+    await reconcileProcessing(ctx, (await scope.media.get(photo.id))!);
+    expect(await scope.media.get(photo.id)).toMatchObject({
+      status: 'processing',
+      reprocessAttempts: 0,
+    });
+  });
+
+  it('fails a photo that keeps getting stuck after the re-drive limit', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const photo = await scope.media.create({
+      kind: 'photo',
+      status: 'processing',
+      declaredContentType: 'image/jpeg',
+      declaredSizeBytes: 10,
+      originalKey: `weddings/${wedding.id}/media/poison/original`,
+      reprocessAttempts: MAX_PHOTO_REDRIVES,
+    });
+    const m = (await scope.media.get(photo.id))!;
+    await reconcileProcessing(ctx, m);
+    expect(await scope.media.get(photo.id)).toMatchObject({
+      status: 'failed',
+      failureReason: 'processing_exhausted',
+    });
+  });
+
+  it('gives up on a Stream video that stays pending for a day', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const video = await scope.media.create({
+      kind: 'video',
+      status: 'processing',
+      declaredContentType: 'video/mp4',
+      declaredSizeBytes: 10,
+      videoProvider: 'cloudflare',
+      videoUid: 'uid-forever-pending',
+    });
+    vi.mocked(ctx.video.state).mockResolvedValue({ state: 'pending' } as never);
+    ctx.setNow(new Date(video.createdAt.getTime() + 2 * 3600_000));
+    await reconcileProcessing(ctx, video);
+    expect((await scope.media.get(video.id))?.status).toBe('processing');
+
+    ctx.setNow(new Date(video.createdAt.getTime() + 25 * 3600_000));
+    await reconcileProcessing(ctx, video);
+    vi.mocked(ctx.video.state).mockReset();
+    expect(await scope.media.get(video.id)).toMatchObject({
+      status: 'failed',
+      failureReason: 'processing_timeout',
+    });
+  });
+
+  it('does not apply a transition the couple postponed after the tick read the wedding', async () => {
+    const { wedding } = await activeWedding();
+    const stale = (await getWeddingById(ctx.db, wedding.id))!;
+    await updateWedding(ctx.db, wedding.id, { readOnlyAt: addDays(wedding.readOnlyAt, 10) });
+    ctx.setNow(addDays(wedding.readOnlyAt, 1));
+    await advanceWedding(ctx, stale);
+    expect(await status(wedding.id)).toBe('active');
+  });
+
+  it('purges files a lost processing run left behind', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const photo = await scope.media.create({
+      kind: 'photo',
+      status: 'deleted',
+      declaredContentType: 'image/jpeg',
+      declaredSizeBytes: 10,
+    });
+    const orphan = `weddings/${wedding.id}/media/${photo.id}/full-deadbeef.jpg`;
+    await ctx.memory.put(orphan, Buffer.from('x'), 'image/jpeg');
+    await purgeMedia(ctx, { weddingId: wedding.id, mediaId: photo.id });
+    expect(ctx.memory.objects.has(orphan)).toBe(false);
   });
 
   it('settles Stream videos from the API when the webhook never came', async () => {

@@ -1,4 +1,4 @@
-import { PENDING_MEDIA_STATUSES, QUEUES } from '@vgb/core';
+import { mediaPurgeRequest, PENDING_MEDIA_STATUSES } from '@vgb/core';
 import { markMediaFailed, markVideoReady, weddingScope } from '@vgb/db';
 import { verifyStreamWebhook, type StreamWebhook } from '@vgb/services';
 import { env } from '@/lib/env';
@@ -67,11 +67,7 @@ export async function POST(req: Request) {
     const reason =
       payload.status.errorReasonCode ?? payload.status.errorReasonText ?? 'stream_error';
     if (await markMediaFailed(db(), media, reason)) {
-      await enqueue(
-        QUEUES.mediaPurge,
-        { weddingId, mediaId: media.id },
-        { singletonKey: media.id },
-      );
+      await enqueue(...mediaPurgeRequest(weddingId, media.id));
     }
   }
   return new Response('OK');

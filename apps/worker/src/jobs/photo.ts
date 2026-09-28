@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   detectMedia,
   mediaStorageKey,
@@ -172,9 +173,11 @@ export async function processPhoto(ctx: Context, job: PhotoProcessJob): Promise<
   const encoded = await encodeVariants(original);
   if (!encoded) return discard('decode_failed');
 
+  // Per-attempt names: two overlapping runs must not overwrite, or clean up, each other's files.
+  const attempt = randomUUID().slice(0, 8);
   const variants: Partial<Record<PhotoVariant, string>> = {};
   for (const v of encoded) {
-    const key = mediaStorageKey(job.weddingId, media.id, `${v.name}.${v.ext}`);
+    const key = mediaStorageKey(job.weddingId, media.id, `${v.name}-${attempt}.${v.ext}`);
     await ctx.storage.put(key, v.data, v.contentType);
     variants[v.name] = key;
   }
