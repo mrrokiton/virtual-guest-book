@@ -9,7 +9,7 @@ import {
   getMembershipRole,
   listWeddingsForUser,
 } from './weddings';
-import { hitRateLimit, peekRateLimit } from './rate-limit';
+import { consumeRateLimit, hitRateLimit, lockRateLimit, peekRateLimit } from './rate-limit';
 
 let db: Database;
 let close: () => Promise<void>;
@@ -123,5 +123,26 @@ describe('rate limits', () => {
     expect((await hitRateLimit(db, 'k1', 60_000)).count).toBe(2);
     expect((await peekRateLimit(db, 'k1'))?.count).toBe(2);
     expect(await peekRateLimit(db, 'unknown')).toBeNull();
+  });
+
+  it('keeps a locked key blocked past its original window', async () => {
+    await hitRateLimit(db, 'k2', 1_000);
+    const until = new Date(Date.now() + 15 * 60_000);
+    await lockRateLimit(db, 'k2', until);
+    expect((await peekRateLimit(db, 'k2'))?.resetAt.getTime()).toBe(until.getTime());
+    await lockRateLimit(db, 'k2', new Date(Date.now() + 60_000));
+    expect((await peekRateLimit(db, 'k2'))?.resetAt.getTime()).toBe(until.getTime());
+  });
+
+  it('allows up to max hits and then reports when to retry', async () => {
+    expect(await consumeRateLimit(db, 'k3', 60_000, 2)).toEqual({
+      allowed: true,
+      retryAfter: null,
+    });
+    expect((await consumeRateLimit(db, 'k3', 60_000, 2)).allowed).toBe(true);
+    const denied = await consumeRateLimit(db, 'k3', 60_000, 2);
+    expect(denied.allowed).toBe(false);
+    expect(denied.retryAfter).toBeGreaterThan(55);
+    expect(denied.retryAfter).toBeLessThanOrEqual(60);
   });
 });

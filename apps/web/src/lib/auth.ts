@@ -1,4 +1,4 @@
-import { ensureTenantForUser, schema } from '@vgb/db';
+import { consumeRateLimit, ensureTenantForUser, schema } from '@vgb/db';
 import { emails } from '@vgb/services';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
@@ -40,7 +40,15 @@ function createAuth() {
         await mailer().send(emails.verifyEmail(user.email, url));
       },
     },
-    rateLimit: { enabled: cfg.NODE_ENV === 'production', window: 60, max: 30 },
+    rateLimit: {
+      enabled: cfg.NODE_ENV === 'production',
+      window: 60,
+      max: 30,
+      // Shared by all web machines; the default in-memory store multiplies the limit per machine.
+      customStorage: {
+        consume: (key, rule) => consumeRateLimit(db(), `auth:${key}`, rule.window * 1000, rule.max),
+      },
+    },
     // Fly's proxy overwrites Fly-Client-IP; without it every client shares one rate-limit bucket.
     advanced: { ipAddress: { ipAddressHeaders: ['fly-client-ip'] } },
     plugins: [

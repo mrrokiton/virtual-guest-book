@@ -114,6 +114,6 @@ test.describe.serial('wedding from registration to moderation', () => {
       statuses.push(res.status());
     }
     expect(statuses.slice(0, 9).every((s) => s === 401)).toBe(true);
-    expect(statuses.at(-1)).toBe(429);
+    expect(statuses.slice(9)).toEqual([429, 429]);
   });
 });

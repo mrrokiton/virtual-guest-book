@@ -25,6 +25,29 @@ export async function hitRateLimit(
   return { count: Number(row.count), resetAt: new Date(row.reset_at) };
 }
 
+/** Keeps `key` blocked until `until`, regardless of when its window started. */
+export async function lockRateLimit(db: Database, key: string, until: Date): Promise<void> {
+  await db
+    .update(rateLimits)
+    .set({ resetAt: sql`greatest(${rateLimits.resetAt}, ${until.toISOString()}::timestamptz)` })
+    .where(eq(rateLimits.key, key));
+}
+
+/** Atomic check-and-count in the shape Better Auth's `customStorage` expects. */
+export async function consumeRateLimit(
+  db: Database,
+  key: string,
+  windowMs: number,
+  max: number,
+): Promise<{ allowed: boolean; retryAfter: number | null }> {
+  const state = await hitRateLimit(db, key, windowMs);
+  if (state.count <= max) return { allowed: true, retryAfter: null };
+  return {
+    allowed: false,
+    retryAfter: Math.max(1, Math.ceil((state.resetAt.getTime() - Date.now()) / 1000)),
+  };
+}
+
 export async function peekRateLimit(db: Database, key: string): Promise<RateLimitState | null> {
   const [row] = await db.select().from(rateLimits).where(eq(rateLimits.key, key)).limit(1);
   if (!row || row.resetAt <= new Date()) return null;

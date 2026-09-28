@@ -7,23 +7,46 @@ export const dynamic = 'force-dynamic';
 const HEARTBEAT_MS = 25_000;
 /** A few tabs per device is normal; hundreds from one PIN session is abuse. */
 const MAX_STREAMS_PER_SESSION = 4;
+/**
+ * Per machine, so one wedding cannot take the whole Fly connection limit (soft 800). Guests
+ * turned away here fall back to polling.
+ */
+const MAX_STREAMS_PER_WEDDING = 300;
 
-const g = globalThis as typeof globalThis & { __vgbStreams?: Map<string, number> };
+const g = globalThis as typeof globalThis & {
+  __vgbStreams?: Map<string, number>;
+  __vgbWeddingStreams?: Map<string, number>;
+};
 const openStreams = (g.__vgbStreams ??= new Map());
+const openWeddingStreams = (g.__vgbWeddingStreams ??= new Map());
+
+function increment(counts: Map<string, number>, key: string) {
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function decrement(counts: Map<string, number>, key: string) {
+  const n = (counts.get(key) ?? 1) - 1;
+  if (n <= 0) counts.delete(key);
+  else counts.set(key, n);
+}
 
 export async function GET(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const guest = await resolveGuest(slug);
   if (!guest) return jsonError(401, 'Brak dostępu.');
   const sessionId = guest.session.id;
+  const weddingId = guest.wedding.id;
   if ((openStreams.get(sessionId) ?? 0) >= MAX_STREAMS_PER_SESSION) {
     return jsonError(429, 'Za dużo otwartych kart z galerią.');
   }
-  openStreams.set(sessionId, (openStreams.get(sessionId) ?? 0) + 1);
+  if ((openWeddingStreams.get(weddingId) ?? 0) >= MAX_STREAMS_PER_WEDDING) {
+    return jsonError(429, 'Za dużo osób ogląda teraz galerię na żywo.');
+  }
+  increment(openStreams, sessionId);
+  increment(openWeddingStreams, weddingId);
   const release = () => {
-    const n = (openStreams.get(sessionId) ?? 1) - 1;
-    if (n <= 0) openStreams.delete(sessionId);
-    else openStreams.set(sessionId, n);
+    decrement(openStreams, sessionId);
+    decrement(openWeddingStreams, weddingId);
   };
 
   const encoder = new TextEncoder();

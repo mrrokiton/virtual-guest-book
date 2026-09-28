@@ -1,5 +1,5 @@
 import { constantTimeEqual, guestCanView, normalizePin } from '@vgb/core';
-import { hitRateLimit, peekRateLimit, weddingScope } from '@vgb/db';
+import { hitRateLimit, lockRateLimit, peekRateLimit, weddingScope } from '@vgb/db';
 import { z } from 'zod';
 import { findWedding, setGuestCookie } from '@/lib/guest';
 import {
@@ -15,9 +15,26 @@ import { weddingPin } from '@/lib/weddings';
 export const dynamic = 'force-dynamic';
 
 const WINDOW_MS = 15 * 60 * 1000;
+/** A device that used up its attempts waits this long after the last one. */
+const LOCKOUT_MS = 15 * 60 * 1000;
 /** Failed attempts per device per wedding, and per wedding overall (distributed guessing). */
 const MAX_FAILURES_PER_IP = 10;
 const MAX_FAILURES_PER_WEDDING = 300;
+/**
+ * New guest sessions per IP per wedding. Guests on the venue Wi-Fi share one address, so this
+ * only stops scripted session minting, which would otherwise bypass the per-session SSE cap.
+ */
+const MAX_SESSIONS_PER_IP = 100;
+
+function tooManyAttempts(resetAt: Date, message: string) {
+  const retryAfter = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
+  return jsonError(
+    429,
+    `${message} Spróbuj ponownie za ${Math.ceil(retryAfter / 60)} min.`,
+    { retryAfter },
+    { 'Retry-After': String(retryAfter) },
+  );
+}
 
 const body = z.object({
   pin: z.string().max(20),
@@ -48,24 +65,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       ipState && ipState.count >= MAX_FAILURES_PER_IP ? ipState : null,
       weddingState && weddingState.count >= MAX_FAILURES_PER_WEDDING ? weddingState : null,
     ].find(Boolean);
-    if (blocked) {
-      const retryAfter = Math.max(1, Math.ceil((blocked.resetAt.getTime() - Date.now()) / 1000));
-      return jsonError(
-        429,
-        'Zbyt wiele nieudanych prób. Spróbuj ponownie za kilka minut.',
-        { retryAfter },
-        { 'Retry-After': String(retryAfter) },
-      );
-    }
+    if (blocked) return tooManyAttempts(blocked.resetAt, 'Zbyt wiele nieudanych prób.');
 
     if (!constantTimeEqual(normalizePin(parsed.data.pin), weddingPin(wedding))) {
       const [ip] = await Promise.all([
         hitRateLimit(db(), ipLimitKey, WINDOW_MS),
         hitRateLimit(db(), weddingLimitKey, WINDOW_MS),
       ]);
+      if (ip.count >= MAX_FAILURES_PER_IP) {
+        const until = new Date(Date.now() + LOCKOUT_MS);
+        await lockRateLimit(db(), ipLimitKey, until);
+        return tooManyAttempts(until, 'Zbyt wiele nieudanych prób.');
+      }
       return jsonError(401, 'Nieprawidłowy PIN.', {
-        remaining: Math.max(0, MAX_FAILURES_PER_IP - ip.count),
+        remaining: MAX_FAILURES_PER_IP - ip.count,
       });
+    }
+
+    const sessions = await hitRateLimit(db(), `pin:ok:ip:${wedding.id}:${ipKey(req)}`, WINDOW_MS);
+    if (sessions.count > MAX_SESSIONS_PER_IP) {
+      return tooManyAttempts(sessions.resetAt, 'Zbyt wiele wejść z tej sieci.');
     }
 
     const session = await weddingScope(db(), wedding.id).guestSessions.create({

@@ -36,8 +36,10 @@ select status, count(*) from media where wedding_id = '<id>' group by 1;
 ### Goście nie mogą wejść (PIN)
 
 1. Czy wesele jest `active` lub `read_only` i niezablokowane: panel superadmina `/admin`.
-2. `429` w logach oznacza limit prób: 10 błędnych prób na urządzenie lub 300 na wesele w 15 minut.
-   Limit mija sam. W nagłym wypadku: `delete from rate_limits where key like 'pin:%<wedding_id>%';`
+2. `429` w logach oznacza limit prób: 10 błędnych prób na urządzenie (potem blokada na 15 minut
+   od ostatniej próby) lub 300 na wesele w 15 minut. Osobno: 100 nowych wejść z jednego IP na
+   wesele w 15 minut (goście na wspólnym Wi-Fi sali dzielą IP). Limit mija sam. W nagłym wypadku:
+   `delete from rate_limits where key like 'pin:%<wedding_id>%';`
 3. PIN wyciekł lub trafił na publiczny profil: para zmienia PIN w Ustawieniach, z opcją
    „wyloguj wszystkich gości”. Stare sesje przestają działać od razu.
 
@@ -137,7 +139,7 @@ tylko dodające, więc poprzednia wersja działa na nowym schemacie.
 
 - Limit rozmiaru uploadu do R2 jest sprawdzany po wysłaniu (R2 nie obsługuje polityk POST z
   `content-length-range`): za duże pliki są kasowane przy potwierdzeniu, porzucone po 24 h.
-- Limit prób logowania Better Auth jest liczony w pamięci każdej maszyny web; przy wielu maszynach
-  limit jest odpowiednio luźniejszy. Limity PIN-u gości są w Postgresie i wspólne.
+- Limit strumieni SSE (300 na wesele, 4 na sesję gościa) jest liczony w pamięci każdej maszyny web.
+  Goście ponad limit przechodzą na odpytywanie co 10 s.
 - `pnpm audit`: jedno znalezisko średniej wagi w `esbuild` (zależność `drizzle-kit`), dotyczy tylko
   serwera deweloperskiego esbuild, nieużywanego w produkcji.
