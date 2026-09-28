@@ -1,8 +1,9 @@
-import { addDays, QUEUES, type WeddingPurgeJob } from '@vgb/core';
+import { addDays, type MediaPurgeJob, QUEUES, type WeddingPurgeJob } from '@vgb/core';
 import { getWeddingById, updateWedding, weddingScope } from '@vgb/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestContext, makeWedding, type TestContext } from '../test-utils';
 import { lifecycleTick, sendDeletionReminder } from './lifecycle';
+import { purgeMedia } from './media-purge';
 import { purgeWedding } from './wedding-purge';
 
 let ctx: TestContext;
@@ -101,6 +102,31 @@ describe('wedding lifecycle with an accelerated clock', () => {
     const before = ctx.mails.length;
     await sendDeletionReminder(ctx, { weddingId: wedding.id, purgeAt: new Date().toISOString() });
     expect(ctx.mails.length).toBe(before);
+  });
+
+  it('fails an abandoned upload and purges its bytes', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const upload = await scope.media.create({
+      kind: 'photo',
+      status: 'uploading',
+      declaredContentType: 'image/jpeg',
+      declaredSizeBytes: 10,
+      originalKey: `weddings/${wedding.id}/media/abandoned/original`,
+    });
+    await ctx.memory.put(upload.originalKey!, Buffer.from('x'), 'image/jpeg');
+
+    ctx.setNow(addDays(new Date(), 2));
+    await lifecycleTick(ctx);
+    expect((await scope.media.get(upload.id))?.status).toBe('failed');
+    const job = ctx.sent.find(
+      (s) => s.queue === QUEUES.mediaPurge && (s.data as MediaPurgeJob).mediaId === upload.id,
+    );
+    expect(job?.data).toEqual({ weddingId: wedding.id, mediaId: upload.id });
+
+    await purgeMedia(ctx, job!.data as MediaPurgeJob);
+    expect(ctx.memory.objects.has(upload.originalKey!)).toBe(false);
+    expect((await scope.media.get(upload.id))?.purgedAt).not.toBeNull();
   });
 
   it('does not purge a wedding that is no longer pending deletion', async () => {

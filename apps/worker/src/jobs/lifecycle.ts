@@ -122,7 +122,11 @@ export async function lifecycleTick(ctx: Context): Promise<void> {
       status: 'failed',
       failureReason: 'abandoned',
     });
-    await ctx.boss.send(QUEUES.mediaPurge, m, { singletonKey: m.id });
+    await ctx.boss.send(
+      QUEUES.mediaPurge,
+      { weddingId: m.weddingId, mediaId: m.id },
+      { singletonKey: m.id },
+    );
   }
   for (const m of await listPurgeBacklog(
     ctx.db,
