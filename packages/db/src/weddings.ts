@@ -84,11 +84,17 @@ export async function updateWedding(
   db: Database,
   id: string,
   patch: WeddingPatch,
+  opts: { expectedStatus?: WeddingStatus } = {},
 ): Promise<Wedding | null> {
   const [row] = await db
     .update(weddings)
     .set({ ...patch, updatedAt: new Date() })
-    .where(eq(weddings.id, id))
+    .where(
+      and(
+        eq(weddings.id, id),
+        opts.expectedStatus ? eq(weddings.status, opts.expectedStatus) : undefined,
+      ),
+    )
     .returning();
   return row ?? null;
 }
@@ -105,10 +111,12 @@ export async function applyWeddingTransition(
     to: WeddingStatus;
     purgeAt?: Date | null;
     statusBeforeDeletion?: WeddingStatus | null;
+    archiveAt?: Date;
   },
 ): Promise<Wedding | null> {
   const patch: WeddingPatch = { status: transition.to, updatedAt: new Date() };
   if (transition.purgeAt !== undefined) patch.purgeAt = transition.purgeAt;
+  if (transition.archiveAt !== undefined) patch.archiveAt = transition.archiveAt;
   if (transition.statusBeforeDeletion !== undefined)
     patch.statusBeforeDeletion = transition.statusBeforeDeletion;
   const [row] = await db
@@ -164,6 +172,7 @@ export function listLifecycleCandidates(db: Database, now: Date): Promise<Weddin
         and(eq(weddings.status, 'read_only'), lte(weddings.archiveAt, now)),
         eq(weddings.status, 'archived'),
         and(eq(weddings.status, 'pending_deletion'), lte(weddings.purgeAt, now)),
+        eq(weddings.status, 'deleted'),
       ),
     );
 }

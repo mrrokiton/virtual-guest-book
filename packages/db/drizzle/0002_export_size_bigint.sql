@@ -1,0 +1,1 @@
+ALTER TABLE "exports" ALTER COLUMN "size_bytes" SET DATA TYPE bigint;

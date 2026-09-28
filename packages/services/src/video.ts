@@ -19,6 +19,16 @@ export type VideoUpload =
 
 export type Playback = { type: 'iframe'; url: string } | { type: 'file'; url: string };
 
+export type VideoState =
+  | { state: 'pending' }
+  | {
+      state: 'ready';
+      durationSeconds?: number;
+      width?: number;
+      height?: number;
+    }
+  | { state: 'failed'; reason: string };
+
 export interface VideoProvider {
   readonly name: 'cloudflare' | 'local';
   /** Local videos are playable as soon as the upload lands; Stream needs a webhook first. */
@@ -35,6 +45,8 @@ export interface VideoProvider {
   downloadUrl(video: VideoRef): Promise<string | null>;
   enableDownload(video: VideoRef): Promise<void>;
   delete(video: VideoRef): Promise<void>;
+  /** Processing state straight from the provider, for when its webhook never arrived. */
+  state(video: VideoRef): Promise<VideoState>;
 }
 
 const TOKEN_TTL_SECONDS = 60 * 60;
@@ -79,6 +91,12 @@ class LocalVideoProvider implements VideoProvider {
 
   async delete(video: VideoRef): Promise<void> {
     if (video.originalKey) await this.storage.delete(video.originalKey);
+  }
+
+  async state(video: VideoRef): Promise<VideoState> {
+    return video.originalKey && (await this.storage.head(video.originalKey))
+      ? { state: 'ready' }
+      : { state: 'failed', reason: 'missing_original' };
   }
 }
 
@@ -181,6 +199,36 @@ class CloudflareStreamProvider implements VideoProvider {
   async delete(video: VideoRef): Promise<void> {
     if (video.videoUid) await this.call(`/${video.videoUid}`, { method: 'DELETE' });
   }
+
+  async state(video: VideoRef): Promise<VideoState> {
+    if (!video.videoUid) return { state: 'failed', reason: 'missing_video' };
+    const res = await fetch(`${this.api}/${video.videoUid}`, {
+      headers: { Authorization: `Bearer ${this.cfg.CLOUDFLARE_STREAM_API_TOKEN}` },
+    });
+    if (res.status === 404) return { state: 'failed', reason: 'missing_video' };
+    const body = (await res.json()) as CloudflareEnvelope<Omit<StreamWebhook, 'meta'>>;
+    if (!res.ok || !body.success) {
+      throw new Error(
+        `Cloudflare Stream state ${video.videoUid} failed: ${body.errors?.map((e) => e.message).join(', ') || res.status}`,
+      );
+    }
+    const v = body.result;
+    if (v.readyToStream && v.status.state === 'ready') {
+      return {
+        state: 'ready',
+        durationSeconds: v.duration,
+        width: v.input?.width,
+        height: v.input?.height,
+      };
+    }
+    if (v.status.state === 'error') {
+      return {
+        state: 'failed',
+        reason: v.status.errorReasonCode ?? v.status.errorReasonText ?? 'stream_error',
+      };
+    }
+    return { state: 'pending' };
+  }
 }
 
 export function createVideoProvider(cfg: ServerConfig, storage: Storage): VideoProvider {
@@ -192,7 +240,7 @@ export function createVideoProvider(cfg: ServerConfig, storage: Storage): VideoP
 export interface StreamWebhook {
   uid: string;
   readyToStream: boolean;
-  status: { state: string; errorReasonCode?: string; errReasonText?: string };
+  status: { state: string; errorReasonCode?: string; errorReasonText?: string };
   duration?: number;
   input?: { width?: number; height?: number };
   meta?: Record<string, string>;

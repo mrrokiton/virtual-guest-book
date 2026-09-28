@@ -17,6 +17,11 @@ const MAX_UPLOADS_PER_SESSION = 150;
 const UPLOAD_WINDOW_MS = 10 * 60 * 1000;
 /** Clients report duration from the file's metadata; allow for rounding. */
 const DURATION_TOLERANCE_S = 1.5;
+/**
+ * The client PUTs right after receiving the URL and asks for a new one on retry. Short, because
+ * the URL could otherwise replace the object after /complete checked its size.
+ */
+const PHOTO_PUT_TTL_SECONDS = 5 * 60;
 
 const body = z.object({
   contentType: z.string().max(100),
@@ -95,7 +100,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
         mediaId: media.id,
         upload: {
           method: 'PUT',
-          url: await storage().presignPut(key, contentType),
+          url: await storage().presignPut(key, contentType, PHOTO_PUT_TTL_SECONDS),
           headers: { 'Content-Type': contentType },
         },
       });

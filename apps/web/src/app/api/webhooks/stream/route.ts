@@ -1,5 +1,5 @@
-import { QUEUES } from '@vgb/core';
-import { publishMediaEvent, weddingScope } from '@vgb/db';
+import { PENDING_MEDIA_STATUSES, QUEUES } from '@vgb/core';
+import { markMediaFailed, markVideoReady, weddingScope } from '@vgb/db';
 import { verifyStreamWebhook, type StreamWebhook } from '@vgb/services';
 import { env } from '@/lib/env';
 import { isUuid } from '@/lib/session';
@@ -47,23 +47,32 @@ export async function POST(req: Request) {
     return new Response('Gone', { status: 202 });
   }
 
+  // Redeliveries and late webhooks must not revive hidden, failed or already-ready videos.
+  if (!PENDING_MEDIA_STATUSES.includes(media.status)) return new Response('OK');
+
   if (payload.readyToStream && payload.status.state === 'ready') {
-    await scope.media.update(media.id, {
-      status: 'ready',
-      readyAt: new Date(),
-      durationSeconds: payload.duration ?? media.durationSeconds,
-      width: payload.input?.width ?? null,
-      height: payload.input?.height ?? null,
-    });
+    // Before the status flips, so a retried webhook still finds the video pending.
     await video().enableDownload(media);
-    await publishMediaEvent(db(), { type: 'media.ready', weddingId, mediaId: media.id });
+    await markVideoReady(
+      db(),
+      media,
+      {
+        durationSeconds: payload.duration,
+        width: payload.input?.width,
+        height: payload.input?.height,
+      },
+      new Date(),
+    );
   } else if (payload.status.state === 'error') {
-    await scope.media.update(media.id, {
-      status: 'failed',
-      failureReason:
-        payload.status.errorReasonCode ?? payload.status.errReasonText ?? 'stream_error',
-    });
-    await enqueue(QUEUES.mediaPurge, { weddingId, mediaId: media.id });
+    const reason =
+      payload.status.errorReasonCode ?? payload.status.errorReasonText ?? 'stream_error';
+    if (await markMediaFailed(db(), media, reason)) {
+      await enqueue(
+        QUEUES.mediaPurge,
+        { weddingId, mediaId: media.id },
+        { singletonKey: media.id },
+      );
+    }
   }
   return new Response('OK');
 }

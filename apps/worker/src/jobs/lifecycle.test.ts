@@ -1,6 +1,6 @@
 import { addDays, type MediaPurgeJob, QUEUES, type WeddingPurgeJob } from '@vgb/core';
 import { getWeddingById, updateWedding, weddingScope } from '@vgb/db';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestContext, makeWedding, type TestContext } from '../test-utils';
 import { lifecycleTick, sendDeletionReminder } from './lifecycle';
 import { purgeMedia } from './media-purge';
@@ -127,6 +127,84 @@ describe('wedding lifecycle with an accelerated clock', () => {
     await purgeMedia(ctx, job!.data as MediaPurgeJob);
     expect(ctx.memory.objects.has(upload.originalKey!)).toBe(false);
     expect((await scope.media.get(upload.id))?.purgedAt).not.toBeNull();
+  });
+
+  it('re-queues a photo stuck in processing instead of failing it', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const photo = await scope.media.create({
+      kind: 'photo',
+      status: 'processing',
+      declaredContentType: 'image/jpeg',
+      declaredSizeBytes: 10,
+      originalKey: `weddings/${wedding.id}/media/stuck/original`,
+    });
+
+    ctx.setNow(addDays(new Date(), 2));
+    await lifecycleTick(ctx);
+    expect((await scope.media.get(photo.id))?.status).toBe('processing');
+    const job = ctx.sent.find(
+      (s) =>
+        s.queue === QUEUES.photoProcess && (s.data as { mediaId: string }).mediaId === photo.id,
+    );
+    expect(job?.options).toMatchObject({ singletonKey: photo.id });
+  });
+
+  it('settles Stream videos from the API when the webhook never came', async () => {
+    const { wedding } = await activeWedding();
+    const scope = weddingScope(ctx.db, wedding.id);
+    const video = (status: 'uploading' | 'processing', uid: string) =>
+      scope.media.create({
+        kind: 'video',
+        status,
+        declaredContentType: 'video/mp4',
+        declaredSizeBytes: 10,
+        videoProvider: 'cloudflare',
+        videoUid: uid,
+      });
+    const encoded = await video('processing', 'uid-ready');
+    const broken = await video('processing', 'uid-error');
+    const closedTab = await video('uploading', 'uid-closed-tab');
+    vi.mocked(ctx.video.state).mockImplementation(async (v) =>
+      v.videoUid === 'uid-error'
+        ? { state: 'failed', reason: 'codec' }
+        : { state: 'ready', durationSeconds: 12 },
+    );
+
+    ctx.setNow(addDays(new Date(), 2));
+    await lifecycleTick(ctx);
+    vi.mocked(ctx.video.state).mockReset();
+
+    expect(await scope.media.get(encoded.id)).toMatchObject({
+      status: 'ready',
+      durationSeconds: 12,
+    });
+    expect((await scope.media.get(closedTab.id))?.status).toBe('ready');
+    expect(ctx.video.enableDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ id: encoded.id }),
+    );
+    expect(await scope.media.get(broken.id)).toMatchObject({
+      status: 'failed',
+      failureReason: 'codec',
+    });
+    expect(
+      ctx.sent.some(
+        (s) => s.queue === QUEUES.mediaPurge && (s.data as MediaPurgeJob).mediaId === broken.id,
+      ),
+    ).toBe(true);
+  });
+
+  it('retries the purge of a wedding left in deleted', async () => {
+    const { wedding } = await activeWedding();
+    await updateWedding(ctx.db, wedding.id, { status: 'deleted' });
+    await lifecycleTick(ctx);
+    const job = ctx.sent.find(
+      (s) =>
+        s.queue === QUEUES.weddingPurge && (s.data as WeddingPurgeJob).weddingId === wedding.id,
+    );
+    expect(job).toBeDefined();
+    await purgeWedding(ctx, job!.data as WeddingPurgeJob);
+    expect(await status(wedding.id)).toBe('gone');
   });
 
   it('does not purge a wedding that is no longer pending deletion', async () => {

@@ -102,11 +102,21 @@ export function weddingScope(db: Database, weddingId: string) {
         return row ?? null;
       },
 
-      async update(id: string, patch: Partial<NewMedia>): Promise<Media | null> {
+      /**
+       * With `from`, the row changes only if it is still in one of those statuses (null otherwise),
+       * so a late webhook or job cannot overwrite a moderator's or guest's newer decision.
+       */
+      async update(
+        id: string,
+        patch: Partial<NewMedia>,
+        opts: { from?: MediaStatus[] } = {},
+      ): Promise<Media | null> {
         const [row] = await db
           .update(media)
           .set(patch)
-          .where(mediaIn(eq(media.id, id)))
+          .where(
+            mediaIn(eq(media.id, id), opts.from ? inArray(media.status, opts.from) : undefined),
+          )
           .returning();
         return row ?? null;
       },

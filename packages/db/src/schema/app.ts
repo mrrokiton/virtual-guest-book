@@ -1,6 +1,7 @@
 import type { MediaKind, MediaStatus, PlanId, WeddingRole, WeddingStatus } from '@vgb/core';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   index,
@@ -224,7 +225,7 @@ export const exports = pgTable(
       .notNull()
       .default('pending'),
     objectKey: text('object_key'),
-    sizeBytes: integer('size_bytes'),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }),
     mediaCount: integer('media_count'),
     error: text('error'),
     requestedByUserId: text('requested_by_user_id').references(() => user.id, {

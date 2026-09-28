@@ -15,15 +15,21 @@ import {
   listOwnerEmails,
   listPurgeBacklog,
   listStaleUploads,
+  listStuckProcessing,
+  markMediaFailed,
+  markVideoReady,
   pruneRateLimits,
   toLifecycle,
   weddingScope,
+  type Media,
   type Wedding,
 } from '@vgb/db';
 import { emails } from '@vgb/services';
 import { dashboardUrl, type Context } from '../context';
 
 const STALE_UPLOAD_HOURS = 24;
+/** Photo retries and Stream encoding normally finish within minutes. */
+const STUCK_PROCESSING_MINUTES = 60;
 const PURGE_BACKLOG_HOURS = 1;
 /** A wedding can at most pass active -> read_only -> archived -> pending_deletion in one tick. */
 const MAX_STEPS = 4;
@@ -118,27 +124,78 @@ export async function lifecycleTick(ctx: Context): Promise<void> {
     ctx.db,
     new Date(now.getTime() - STALE_UPLOAD_HOURS * 3600_000),
   )) {
-    await weddingScope(ctx.db, m.weddingId).media.update(m.id, {
-      status: 'failed',
-      failureReason: 'abandoned',
-    });
-    await ctx.boss.send(
-      QUEUES.mediaPurge,
-      { weddingId: m.weddingId, mediaId: m.id },
-      { singletonKey: m.id },
-    );
+    try {
+      await expireUpload(ctx, m);
+    } catch (err) {
+      console.error('[lifecycle] expire upload %s failed', m.id, err);
+    }
+  }
+  for (const m of await listStuckProcessing(
+    ctx.db,
+    new Date(now.getTime() - STUCK_PROCESSING_MINUTES * 60_000),
+  )) {
+    try {
+      await reconcileProcessing(ctx, m);
+    } catch (err) {
+      console.error('[lifecycle] reconcile media %s failed', m.id, err);
+    }
   }
   for (const m of await listPurgeBacklog(
     ctx.db,
     new Date(now.getTime() - PURGE_BACKLOG_HOURS * 3600_000),
   )) {
+    await sendPurge(ctx, m);
+  }
+  await pruneRateLimits(ctx.db);
+}
+
+function sendPurge(ctx: Context, m: Pick<Media, 'id' | 'weddingId'>) {
+  return ctx.boss.send(
+    QUEUES.mediaPurge,
+    { weddingId: m.weddingId, mediaId: m.id },
+    { singletonKey: m.id },
+  );
+}
+
+async function expireUpload(ctx: Context, m: Media): Promise<void> {
+  // The guest may have closed the tab after Stream got the file and the webhook was lost.
+  if (m.kind === 'video' && m.videoProvider === 'cloudflare') {
+    const state = await ctx.video.state(m);
+    if (state.state === 'ready') {
+      await ctx.video.enableDownload(m);
+      await markVideoReady(ctx.db, m, state, ctx.now());
+      return;
+    }
+  }
+  const failed = await weddingScope(ctx.db, m.weddingId).media.update(
+    m.id,
+    { status: 'failed', failureReason: 'abandoned' },
+    { from: ['uploading'] },
+  );
+  if (failed) await sendPurge(ctx, m);
+}
+
+/** Re-drives an item stuck in `processing`; the bytes are only dropped once they are gone. */
+export async function reconcileProcessing(ctx: Context, m: Media): Promise<void> {
+  if (m.kind === 'photo') {
+    if (!m.originalKey) {
+      if (await markMediaFailed(ctx.db, m, 'missing_original')) await sendPurge(ctx, m);
+      return;
+    }
     await ctx.boss.send(
-      QUEUES.mediaPurge,
+      QUEUES.photoProcess,
       { weddingId: m.weddingId, mediaId: m.id },
       { singletonKey: m.id },
     );
+    return;
   }
-  await pruneRateLimits(ctx.db);
+  const state = await ctx.video.state(m);
+  if (state.state === 'ready') {
+    await ctx.video.enableDownload(m);
+    await markVideoReady(ctx.db, m, state, ctx.now());
+  } else if (state.state === 'failed') {
+    if (await markMediaFailed(ctx.db, m, state.reason)) await sendPurge(ctx, m);
+  }
 }
 
 export async function sendDeletionReminder(ctx: Context, job: DeletionReminderJob): Promise<void> {

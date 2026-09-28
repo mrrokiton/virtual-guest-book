@@ -7,8 +7,11 @@ import {
   createWedding,
   ensureTenantForUser,
   getMembershipRole,
+  getWeddingById,
   listWeddingsForUser,
+  updateWedding,
 } from './weddings';
+import { markMediaFailed, markVideoReady } from './video-state';
 import { consumeRateLimit, hitRateLimit, lockRateLimit, peekRateLimit } from './rate-limit';
 
 let db: Database;
@@ -144,5 +147,37 @@ describe('rate limits', () => {
     expect(denied.allowed).toBe(false);
     expect(denied.retryAfter).toBeGreaterThan(55);
     expect(denied.retryAfter).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('status guards', () => {
+  it('does not save settings over a status that changed meanwhile', async () => {
+    const { wedding } = await makeWedding('Guard');
+    expect(
+      await updateWedding(db, wedding.id, { name: 'X' }, { expectedStatus: 'active' }),
+    ).toBeNull();
+    expect((await getWeddingById(db, wedding.id))?.name).toBe('Guard');
+    expect(
+      await updateWedding(db, wedding.id, { name: 'X' }, { expectedStatus: 'draft' }),
+    ).toMatchObject({ name: 'X' });
+  });
+
+  it('keeps a hidden video hidden when Stream redelivers its webhook', async () => {
+    const { wedding } = await makeWedding('Redelivery');
+    const scope = weddingScope(db, wedding.id);
+    const video = await scope.media.create({
+      kind: 'video',
+      status: 'processing',
+      declaredContentType: 'video/mp4',
+      declaredSizeBytes: 1000,
+      videoProvider: 'cloudflare',
+      videoUid: 'uid-1',
+    });
+    const now = new Date();
+    expect(await markVideoReady(db, video, { durationSeconds: 3 }, now)).toBe(true);
+    await scope.media.update(video.id, { status: 'hidden', hiddenAt: now });
+    expect(await markVideoReady(db, video, { durationSeconds: 3 }, now)).toBe(false);
+    expect(await markMediaFailed(db, video, 'codec')).toBe(false);
+    expect((await scope.media.get(video.id))?.status).toBe('hidden');
   });
 });

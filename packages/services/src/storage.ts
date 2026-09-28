@@ -18,6 +18,13 @@ export interface ObjectInfo {
   contentType: string | undefined;
 }
 
+export class ObjectTooLargeError extends Error {
+  constructor(key: string, size: number) {
+    super(`Object ${key} is ${size} bytes`);
+    this.name = 'ObjectTooLargeError';
+  }
+}
+
 /** S3-compatible object storage (Cloudflare R2 in production, MinIO locally). Bucket is private. */
 export class Storage {
   private readonly client: S3Client;
@@ -88,10 +95,15 @@ export class Storage {
     return res.Body ? res.Body.transformToByteArray() : new Uint8Array();
   }
 
-  async getBuffer(key: string): Promise<Buffer> {
+  async getBuffer(key: string, opts: { maxBytes?: number } = {}): Promise<Buffer> {
     const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
     if (!res.Body) throw new Error(`Empty object ${key}`);
-    return Buffer.from(await res.Body.transformToByteArray());
+    if (opts.maxBytes !== undefined && (res.ContentLength ?? 0) > opts.maxBytes) {
+      (res.Body as Readable).destroy();
+      throw new ObjectTooLargeError(key, res.ContentLength ?? 0);
+    }
+    const bytes = await res.Body.transformToByteArray();
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
 
   async getStream(key: string): Promise<Readable> {
@@ -129,9 +141,16 @@ export class Storage {
       );
       const keys = (page.Contents ?? []).flatMap((o) => (o.Key ? [{ Key: o.Key }] : []));
       if (keys.length) {
-        await this.client.send(
+        const res = await this.client.send(
           new DeleteObjectsCommand({ Bucket: this.bucket, Delete: { Objects: keys, Quiet: true } }),
         );
+        // Partial failures still come back as HTTP 200.
+        if (res.Errors?.length) {
+          const first = res.Errors[0]!;
+          throw new Error(
+            `Failed to delete ${res.Errors.length} objects under ${prefix}: ${first.Key} ${first.Code}`,
+          );
+        }
         deleted += keys.length;
       }
       token = page.IsTruncated ? page.NextContinuationToken : undefined;

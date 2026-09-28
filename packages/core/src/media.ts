@@ -10,6 +10,8 @@ export const MEDIA_STATUSES = [
   'deleted',
 ] as const;
 export type MediaStatus = (typeof MEDIA_STATUSES)[number];
+/** Upload started but the file is not in the gallery yet. */
+export const PENDING_MEDIA_STATUSES: MediaStatus[] = ['uploading', 'processing'];
 
 export const PHOTO_CONTENT_TYPES = [
   'image/jpeg',

@@ -105,28 +105,29 @@ export async function exportWedding(ctx: Context, job: WeddingExportJob): Promis
       await upload;
     })();
     await Promise.race([run, zipFailed]);
+    const info = await ctx.storage.head(key);
+    await scope.exports.update(row.id, {
+      status: 'ready',
+      objectKey: key,
+      sizeBytes: info?.size ?? null,
+      mediaCount: included,
+      completedAt: ctx.now(),
+      error: skipped.length
+        ? `Pominięto ${skipped.length} plików, których nie udało się pobrać.`
+        : null,
+    });
   } catch (err) {
     zip.abort();
     body.destroy();
     await upload.catch(() => {});
-    await scope.exports.update(row.id, {
-      status: 'failed',
-      error: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
-    });
+    await scope.exports
+      .update(row.id, {
+        status: 'failed',
+        error: err instanceof Error ? err.message.slice(0, 500) : 'unknown',
+      })
+      .catch(() => {});
     throw err;
   }
-
-  const info = await ctx.storage.head(key);
-  await scope.exports.update(row.id, {
-    status: 'ready',
-    objectKey: key,
-    sizeBytes: info?.size ?? null,
-    mediaCount: included,
-    completedAt: ctx.now(),
-    error: skipped.length
-      ? `Pominięto ${skipped.length} plików, których nie udało się pobrać.`
-      : null,
-  });
   await scope.audit({
     actorType: 'system',
     action: 'export.ready',

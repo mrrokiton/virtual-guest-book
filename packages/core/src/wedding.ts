@@ -85,10 +85,14 @@ export interface Transition {
   to: WeddingStatus;
   purgeAt?: Date | null;
   statusBeforeDeletion?: WeddingStatus | null;
+  archiveAt?: Date;
   event: LifecycleEvent;
 }
 
-/** Time-driven transition that is due at `now`, or null. `deleted` is reached by the purge job. */
+/**
+ * Time-driven transition that is due at `now`, or null. `deleted` is reached by the purge job; a
+ * row still in `deleted` means that job failed, so the purge is due again.
+ */
 export function dueTransition(w: WeddingLifecycle, now: Date): Transition | null {
   switch (w.status) {
     case 'active':
@@ -108,6 +112,8 @@ export function dueTransition(w: WeddingLifecycle, now: Date): Transition | null
     }
     case 'pending_deletion':
       return w.purgeAt && now >= w.purgeAt ? { to: 'deleted', event: { type: 'purge_due' } } : null;
+    case 'deleted':
+      return { to: 'deleted', event: { type: 'purge_due' } };
     default:
       return null;
   }
@@ -142,7 +148,11 @@ export function requestDeletion(w: WeddingLifecycle, now: Date): Transition {
   };
 }
 
-/** Undo a scheduled deletion; the status is recomputed from the schedule so time keeps moving. */
+/**
+ * Undo a scheduled deletion; the status is recomputed from the schedule so time keeps moving. A
+ * wedding whose archive period already ran out gets `DELETION_GRACE_DAYS` more, otherwise the next
+ * lifecycle tick would schedule the deletion again right away.
+ */
 export function restore(w: WeddingLifecycle, now: Date): Omit<Transition, 'event'> {
   if (w.status !== 'pending_deletion') {
     throw new DomainError(
@@ -150,10 +160,12 @@ export function restore(w: WeddingLifecycle, now: Date): Omit<Transition, 'event
       'Tylko wesele zaplanowane do usunięcia można przywrócić.',
     );
   }
-  let to: WeddingStatus;
-  if (w.statusBeforeDeletion === 'draft') to = 'draft';
-  else if (now < w.readOnlyAt) to = 'active';
-  else if (now < w.archiveAt) to = 'read_only';
-  else to = 'archived';
-  return { to, purgeAt: null, statusBeforeDeletion: null };
+  const base = { purgeAt: null, statusBeforeDeletion: null };
+  if (w.statusBeforeDeletion === 'draft') return { to: 'draft', ...base };
+  if (now < w.readOnlyAt) return { to: 'active', ...base };
+  if (now < w.archiveAt) return { to: 'read_only', ...base };
+  const archiveDays = planLimits(w.plan).archiveDays;
+  return now < addDays(w.archiveAt, archiveDays)
+    ? { to: 'archived', ...base }
+    : { to: 'archived', archiveAt: addDays(now, DELETION_GRACE_DAYS - archiveDays), ...base };
 }

@@ -51,7 +51,9 @@ select status, count(*) from media where wedding_id = '<id>' group by 1;
   (`update weddings set plan = 'premium' where id = '<id>';`).
 - Upload przechodzi, ale zdjęcie nie pojawia się w galerii: worker. Sprawdź `fly logs -a vgb-worker`.
   Jeśli maszyna nie działa: `fly machine start -a vgb-worker`. Zadania nie giną: pg-boss podejmie je
-  po restarcie. Pliki `uploading`/`processing` starsze niż 24 h są oznaczane jako nieudane i sprzątane.
+  po restarcie. Pliki `uploading` starsze niż 24 h (gość nie dokończył wysyłki) są oznaczane jako
+  nieudane i sprzątane. Pliki `processing` starsze niż godzina są ponawiane co przebieg cyklu życia:
+  zdjęcia wracają do kolejki, a stan filmów jest pobierany z Stream.
 
 ### Galeria nie odświeża się na żywo
 
@@ -63,8 +65,8 @@ Hub SSE po utracie połączenia z Postgresem łączy się ponownie i wysyła kli
 
 Filmy przetwarza Cloudflare Stream i zgłasza gotowość webhookiem `POST /api/webhooks/stream`.
 Sprawdź w panelu Cloudflare → Stream → Webhooks, czy wywołania nie kończą się `401` (zły
-`CLOUDFLARE_STREAM_WEBHOOK_SECRET`). Filmy bez webhooka zostają w statusie `processing` i po 24 h są
-sprzątane.
+`CLOUDFLARE_STREAM_WEBHOOK_SECRET`). Filmy bez webhooka worker po godzinie sprawdza bezpośrednio w
+API Stream i oznacza jako gotowe albo nieudane.
 
 ### Baza danych niedostępna
 

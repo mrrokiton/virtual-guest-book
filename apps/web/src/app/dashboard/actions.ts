@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import {
   activate,
+  adminCanEdit,
   addDays,
   computeSchedule,
   DEFAULT_UPLOAD_DAYS,
@@ -13,6 +14,7 @@ import {
   generateSlug,
   generateToken,
   MAX_UPLOAD_DAYS,
+  QUEUE_CONFIG,
   QUEUES,
   requestDeletion,
   restore,
@@ -63,11 +65,16 @@ async function withAccess(
   }
 }
 
+const MAX_EVENT_DAYS_AHEAD = 3 * 365;
+
 const weddingFields = z.object({
   name: z.string().trim().min(1, 'Podaj nazwę wesela.').max(120),
   eventDate: z.string().transform((v, ctx) => {
     const d = warsawMidnight(v);
     if (!d) ctx.addIssue({ code: 'custom', message: 'Podaj poprawną datę wesela.' });
+    else if (d > addDays(new Date(), MAX_EVENT_DAYS_AHEAD)) {
+      ctx.addIssue({ code: 'custom', message: 'Data wesela może być najwyżej 3 lata naprzód.' });
+    }
     return d as Date;
   }),
   uploadDays: z.coerce.number().int().min(1).max(MAX_UPLOAD_DAYS).default(DEFAULT_UPLOAD_DAYS),
@@ -106,7 +113,7 @@ export async function createWeddingAction(_: ActionState, form: FormData): Promi
 
 export async function updateWeddingAction(_: ActionState, form: FormData): Promise<ActionState> {
   return withAccess(form.get('weddingId'), 'wedding.edit', async ({ wedding, user }) => {
-    if (!['draft', 'active', 'read_only'].includes(wedding.status)) {
+    if (!adminCanEdit(wedding)) {
       return { error: 'Tego wesela nie można już edytować.' };
     }
     const parsed = weddingFields
@@ -124,17 +131,26 @@ export async function updateWeddingAction(_: ActionState, form: FormData): Promi
     const schedule = computeSchedule(eventDate, uploadDays, wedding.plan);
 
     const now = new Date();
+    if (wedding.status !== 'draft' && schedule.archiveAt <= now) {
+      return { error: 'Przy tej dacie galeria zostałaby od razu zarchiwizowana. Sprawdź datę.' };
+    }
     let status = wedding.status;
     if (status === 'read_only' && now < schedule.readOnlyAt) status = 'active';
 
-    await updateWedding(db(), wedding.id, {
-      name,
-      eventDate,
-      uploadDays,
-      status,
-      ...schedule,
-      theme: { headline: headline || undefined, accent: accent || undefined },
-    });
+    const saved = await updateWedding(
+      db(),
+      wedding.id,
+      {
+        name,
+        eventDate,
+        uploadDays,
+        status,
+        ...schedule,
+        theme: { headline: headline || undefined, accent: accent || undefined },
+      },
+      { expectedStatus: wedding.status },
+    );
+    if (!saved) return { error: 'Stan wesela się zmienił. Odśwież stronę.' };
     await weddingScope(db(), wedding.id).audit({
       actorType: 'user',
       actorId: user.id,
@@ -146,7 +162,9 @@ export async function updateWeddingAction(_: ActionState, form: FormData): Promi
 export async function activateWeddingAction(_: ActionState, form: FormData): Promise<ActionState> {
   return withAccess(form.get('weddingId'), 'wedding.activate', async ({ wedding, user }) => {
     const t = activate(toLifecycle(wedding), new Date());
-    await applyWeddingTransition(db(), wedding.id, 'draft', t);
+    if (!(await applyWeddingTransition(db(), wedding.id, 'draft', t))) {
+      return { error: 'Stan wesela się zmienił. Odśwież stronę.' };
+    }
     await weddingScope(db(), wedding.id).audit({
       actorType: 'user',
       actorId: user.id,
@@ -364,12 +382,20 @@ export async function restoreWeddingAction(_: ActionState, form: FormData): Prom
   });
 }
 
+const exportJob = QUEUE_CONFIG[QUEUES.weddingExport];
+/** Past every attempt pg-boss would make; a row still pending then was lost with its job. */
+const EXPORT_GIVE_UP_MS =
+  (exportJob.retryLimit + 1) * (exportJob.expireInSeconds + (exportJob.retryDelay ?? 0)) * 1000;
+
 export async function requestExportAction(_: ActionState, form: FormData): Promise<ActionState> {
   return withAccess(form.get('weddingId'), 'export.download', async ({ wedding, user }) => {
     const scope = weddingScope(db(), wedding.id);
     const latest = await scope.exports.latest();
     if (latest && (latest.status === 'pending' || latest.status === 'running')) {
-      return { error: 'Paczka jest już przygotowywana.' };
+      if (Date.now() - latest.createdAt.getTime() < EXPORT_GIVE_UP_MS) {
+        return { error: 'Paczka jest już przygotowywana.' };
+      }
+      await scope.exports.update(latest.id, { status: 'failed', error: 'timeout' });
     }
     const row = await scope.exports.create(user.id);
     await enqueue(QUEUES.weddingExport, { weddingId: wedding.id, exportId: row.id, notify: true });

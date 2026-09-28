@@ -2,7 +2,13 @@ import { Readable } from 'node:stream';
 import { computeSchedule, generateSlug, type PlanId } from '@vgb/core';
 import { createWedding, ensureTenantForUser, type Database } from '@vgb/db';
 import { createTestDb, insertTestUser } from '@vgb/db/testing';
-import type { EmailMessage, ServerConfig, Storage, VideoProvider } from '@vgb/services';
+import {
+  ObjectTooLargeError,
+  type EmailMessage,
+  type ServerConfig,
+  type Storage,
+  type VideoProvider,
+} from '@vgb/services';
 import type { PgBoss } from 'pg-boss';
 import { vi } from 'vitest';
 import type { Context } from './context';
@@ -18,9 +24,11 @@ export class MemoryStorage {
     for await (const c of body) chunks.push(Buffer.from(c as Uint8Array));
     this.objects.set(key, { body: Buffer.concat(chunks), contentType });
   }
-  async getBuffer(key: string) {
+  async getBuffer(key: string, opts: { maxBytes?: number } = {}) {
     const o = this.objects.get(key);
     if (!o) throw new Error(`NoSuchKey ${key}`);
+    if (opts.maxBytes !== undefined && o.body.length > opts.maxBytes)
+      throw new ObjectTooLargeError(key, o.body.length);
     return o.body;
   }
   async getStream(key: string) {
@@ -64,6 +72,8 @@ export async function createTestContext(): Promise<TestContext> {
     readyOnUpload: true,
     delete: vi.fn(async () => {}),
     downloadUrl: vi.fn(async () => null),
+    enableDownload: vi.fn(async () => {}),
+    state: vi.fn(async () => ({ state: 'pending' })),
   } as unknown as VideoProvider;
 
   return {

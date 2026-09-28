@@ -122,6 +122,22 @@ describe('manual transitions', () => {
     expect(restore({ ...pending, statusBeforeDeletion: 'draft' }, now).to).toBe('draft');
   });
 
+  it('keeps a restored wedding for the grace period once its archive ran out', () => {
+    const w = wedding({ status: 'pending_deletion', statusBeforeDeletion: 'archived' });
+    const archiveDays = PLANS.standard.archiveDays;
+    const inArchive = addDays(w.archiveAt, archiveDays - 1);
+    expect(restore(w, inArchive)).not.toHaveProperty('archiveAt');
+
+    const late = addDays(w.archiveAt, archiveDays + 5);
+    const restored = { ...w, ...restore(w, late), status: 'archived' as const };
+    expect(dueTransition(restored, addDays(late, 13))).toBeNull();
+    expect(dueTransition(restored, addDays(late, 14))?.to).toBe('pending_deletion');
+  });
+
+  it('keeps re-issuing the purge for a wedding stuck in deleted', () => {
+    expect(dueTransition(wedding({ status: 'deleted' }), event)?.event.type).toBe('purge_due');
+  });
+
   it('refuses to delete twice', () => {
     expect(() => requestDeletion(wedding({ status: 'pending_deletion' }), event)).toThrow(
       DomainError,
