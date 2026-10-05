@@ -33,6 +33,7 @@ import {
   getMembershipRole,
   getWeddingById,
   publishMediaEvent,
+  publishMusicChanged,
   revokeInvite,
   toLifecycle,
   updateWedding,
@@ -420,6 +421,7 @@ export async function setMusicModuleAction(_: ActionState, form: FormData): Prom
     const scope = weddingScope(db(), wedding.id);
     await scope.modules.set(MUSIC_MODULE_KEY, enabled, { fairQueue });
     await scope.music.rerank(fairQueue);
+    await publishMusicChanged(db(), wedding.id);
     await scope.audit({
       actorType: 'user',
       actorId: user.id,

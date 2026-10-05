@@ -5,11 +5,12 @@ import {
   isMusicKind,
   MUSIC_CREATE_LIMIT,
   MUSIC_CREATE_WINDOW_MS,
+  MUSIC_SAFETY_CAP,
   musicBodyError,
   musicCreateCap,
   normalizeMusicBody,
 } from '@vgb/core';
-import { hitRateLimit, weddingScope } from '@vgb/db';
+import { hitRateLimit, publishMusicChanged, weddingScope } from '@vgb/db';
 import { z } from 'zod';
 import { resolveGuest } from '@/lib/guest';
 import { loadMusicModule, toMusicEntry } from '@/lib/music';
@@ -47,7 +48,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
         open: open.map((row) => toMusicEntry(row, sessionId)),
         history: history.map((row) => toMusicEntry(row, sessionId)),
         capRemaining: Math.max(0, musicCreateCap(capInput) - capInput.mine),
-        atSafetyCap: capInput.mine >= 40,
+        atSafetyCap: capInput.mine >= MUSIC_SAFETY_CAP,
         isDj: ctx.guest.session.role === 'dj',
         canMutate: guestCanUpload(ctx.guest.wedding, new Date()),
       },
@@ -116,6 +117,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       targetId: created.id,
       metadata: { kind: created.kind },
     });
+    await publishMusicChanged(db(), ctx.guest.wedding.id);
     return Response.json(toMusicEntry(created, session.id), { status: 201 });
   } catch (err) {
     return domainErrorResponse(err);

@@ -4,7 +4,7 @@ import { loadMusicModule } from '@/lib/music';
 import { crossOriginResponse, domainErrorResponse, jsonError } from '@/lib/request';
 import { isUuid } from '@/lib/session';
 import { db } from '@/lib/server';
-import { weddingScope } from '@vgb/db';
+import { publishMusicChanged, weddingScope } from '@vgb/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +34,7 @@ export async function DELETE(
       targetType: 'music_suggestion',
       targetId: id,
     });
+    await publishMusicChanged(db(), guest.wedding.id);
     return new Response(null, { status: 204 });
   } catch (err) {
     return domainErrorResponse(err);

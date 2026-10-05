@@ -1,5 +1,5 @@
 import { guestCanUpload, isMusicStatus } from '@vgb/core';
-import { weddingScope } from '@vgb/db';
+import { publishMusicChanged, weddingScope } from '@vgb/db';
 import { z } from 'zod';
 import { resolveGuest } from '@/lib/guest';
 import { loadMusicModule, toMusicEntry } from '@/lib/music';
@@ -43,6 +43,7 @@ export async function POST(
       targetId: id,
       metadata: { status: parsed.data.status },
     });
+    await publishMusicChanged(db(), guest.wedding.id);
     return Response.json(toMusicEntry(row, guest.session.id));
   } catch (err) {
     return domainErrorResponse(err);

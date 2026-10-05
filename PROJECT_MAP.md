@@ -56,34 +56,34 @@ Apps must not import `drizzle-orm` directly. ESLint enforces that in `apps/**` s
 
 ## Directory structure
 
-| Path                                    | Responsibility                                                                                   |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `apps/web`                              | Next.js app: guest zone, dashboard, admin, legal pages, route handlers, SSE hub                  |
-| `apps/web/src/app`                      | App Router pages and route handlers                                                              |
-| `apps/web/src/app/w/[slug]`             | Guest entry. Slug is 24 chars of lowercase base32 (`isValidSlug`)                                |
-| `apps/web/src/app/dashboard`            | Couple panel and `actions.ts` server actions                                                     |
-| `apps/web/src/app/admin`                | Platform admin list, block, and approve                                                          |
-| `apps/web/src/app/(auth)`               | Login, register, forgot password, reset password                                                 |
-| `apps/web/src/app/invite/[token]`       | Accept a co-admin invite                                                                         |
-| `apps/web/src/app/(legal)`              | `/regulamin`, `/prywatnosc`                                                                      |
-| `apps/web/src/app/api`                  | HTTP API (guest, files, health, Better Auth, Stream webhook, QR, ZIP redirect)                   |
-| `apps/web/src/components/guest`         | PIN form, DJ entry, upload queue, live gallery, lightbox, music suggestions                      |
-| `apps/web/src/components/ui`            | `button`, `input`, `card`                                                                        |
-| `apps/web/src/lib`                      | Auth, guest cookie, session checks, jobs, realtime hub, env                                      |
-| `apps/web/src/proxy.ts`                 | Request hook: CSP and `X-Robots-Tag` on guest, API, dashboard, and invite paths                  |
-| `apps/web/scripts/create-superadmin.ts` | Grants `platform_admins` for an email                                                            |
-| `apps/worker`                           | pg-boss process. Started with `tsx`, not a bundle (`sharp`)                                      |
-| `apps/worker/src/jobs`                  | Photo processing, media purge, ZIP export, wedding purge, lifecycle, email                       |
-| `packages/core`                         | Wedding state machine, plans, permissions, PIN/slug, media detection, music caps and queue order |
-| `packages/db`                           | Drizzle schema, migrations, `weddingScope`, rate limits, NOTIFY                                  |
-| `packages/db/src/testing.ts`            | PGlite helper. Exported as `@vgb/db/testing`                                                     |
-| `packages/services`                     | Zod env, S3 client, video providers, mailer and email templates                                  |
-| `docs/runbook.md`                       | Production diagnosis and first-time setup. Polish                                                |
-| `tasks/todo.md`                         | Approved MVP plan and explicit deviations. Polish. Historical, not a live tracker                |
-| `tasks/music-suggestions.md`            | Plan for DJ music suggestions. Implemented on `feature/music-suggestions`                        |
-| `load/k6-wedding.js`                    | Load script. Needs `BASE_URL` and `WEDDINGS="slug:PIN,..."`                                      |
-| `docker-compose.yml`                    | Postgres 17, MinIO, MinIO bucket setup, Mailpit                                                  |
-| `.github/workflows/ci.yml`              | `check` (format, lint, typecheck, test, build) then `e2e` on compose                             |
+| Path                                    | Responsibility                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `apps/web`                              | Next.js app: guest zone, dashboard, admin, legal pages, route handlers, SSE hub                   |
+| `apps/web/src/app`                      | App Router pages and route handlers                                                               |
+| `apps/web/src/app/w/[slug]`             | Guest photos at `/w/[slug]`. Suggestions at `/w/[slug]/music`. DJ entry at `/w/[slug]/dj/[token]` |
+| `apps/web/src/app/dashboard`            | Couple panel and `actions.ts` server actions                                                      |
+| `apps/web/src/app/admin`                | Platform admin list, block, and approve                                                           |
+| `apps/web/src/app/(auth)`               | Login, register, forgot password, reset password                                                  |
+| `apps/web/src/app/invite/[token]`       | Accept a co-admin invite                                                                          |
+| `apps/web/src/app/(legal)`              | `/regulamin`, `/prywatnosc`                                                                       |
+| `apps/web/src/app/api`                  | HTTP API (guest, files, health, Better Auth, Stream webhook, QR, ZIP redirect)                    |
+| `apps/web/src/components/guest`         | PIN form, DJ entry, upload queue, live gallery, lightbox, music list and section nav              |
+| `apps/web/src/components/ui`            | `button`, `input`, `card`                                                                         |
+| `apps/web/src/lib`                      | Auth, guest cookie, session checks, jobs, realtime hub, env                                       |
+| `apps/web/src/proxy.ts`                 | Request hook: CSP and `X-Robots-Tag` on guest, API, dashboard, and invite paths                   |
+| `apps/web/scripts/create-superadmin.ts` | Grants `platform_admins` for an email                                                             |
+| `apps/worker`                           | pg-boss process. Started with `tsx`, not a bundle (`sharp`)                                       |
+| `apps/worker/src/jobs`                  | Photo processing, media purge, ZIP export, wedding purge, lifecycle, email                        |
+| `packages/core`                         | Wedding state machine, plans, permissions, PIN/slug, media detection, music caps and queue order  |
+| `packages/db`                           | Drizzle schema, migrations, `weddingScope`, rate limits, NOTIFY                                   |
+| `packages/db/src/testing.ts`            | PGlite helper. Exported as `@vgb/db/testing`                                                      |
+| `packages/services`                     | Zod env, S3 client, video providers, mailer and email templates                                   |
+| `docs/runbook.md`                       | Production diagnosis and first-time setup. Polish                                                 |
+| `tasks/todo.md`                         | Approved MVP plan and explicit deviations. Polish. Historical, not a live tracker                 |
+| `tasks/music-suggestions.md`            | Plan for DJ music suggestions. Implemented                                                        |
+| `load/k6-wedding.js`                    | Load script. Needs `BASE_URL` and `WEDDINGS="slug:PIN,..."`                                       |
+| `docker-compose.yml`                    | Postgres 17, MinIO, MinIO bucket setup, Mailpit                                                   |
+| `.github/workflows/ci.yml`              | `check` (format, lint, typecheck, test, build) then `e2e` on compose                              |
 
 `pnpm-workspace.yaml` includes `packages/modules/*`. That directory does not exist. `wedding_modules` holds per-wedding flags. The implemented key is `music_requests` (`enabled`, `config.fairQueue`).
 
@@ -126,13 +126,15 @@ Local substitutes: Postgres and MinIO from `docker-compose.yml`, `VIDEO_PROVIDER
 4. Photos move to `processing` and enqueue `photo-process`. The worker sniffs magic bytes (`detectMedia`), converts HEIC, strips EXIF, writes variants `thumb` (400 webp), `large` (1600 webp), and `full` (4096 jpeg), then publishes `media.ready`.
 5. Cloudflare videos stay `processing` until the webhook calls `markVideoReady`. Local videos become `ready` in `/complete` after a 64-byte sniff, then `publishMediaEvent`.
 6. Gallery: `GET /api/w/[slug]/media` calls `media.gallery` (status `ready` only) and returns cursor pages (`limit` default 30, max 60). Wedding members use the same ready-only feed. The dashboard media page uses `media.adminList` (everything except `deleted` and `uploading`). File bytes are never proxied. `GET .../file` defaults to `v=large`. `v=thumb|large|full` redirects to a 10-minute signed URL. `?v=play` returns JSON `{ type: 'iframe' | 'file', url }`. Stream playback tokens last 1 hour (`TOKEN_TTL_SECONDS` in `packages/services/src/video.ts`).
-7. Live updates: `GET /api/w/[slug]/events` (SSE). `RealtimeHub` holds one `LISTEN vgb_media` per web process. After 3 EventSource failures the client polls every 10 s (`use-live-gallery.ts`). Postgres reconnect sends `resync`.
+7. Live updates: `GET /api/w/[slug]/events` (SSE). `RealtimeHub` holds one `LISTEN vgb_media` per web process. Events are `media.ready`, `media.removed`, `music.changed`, and `resync`. The gallery merges media rows (`use-live-gallery.ts`). The music page refetches `GET /music` on `music.changed` (`use-live-music.ts`). After 3 EventSource failures the client polls every 10 s. Postgres reconnect sends `resync`. A page keeps one stream.
 
 ### Music suggestions
 
 Off unless `wedding_modules.module_key = music_requests` is enabled. The couple toggles that and `config.fairQueue` in wedding settings (`wedding.edit`). They also create DJ links. Only the SHA-256 of the token is stored. The URL `/w/[slug]/dj/[token]` creates a `guest_sessions` row with `role = dj`. That session can upload like a guest and can set suggestion status. It does not get dashboard access. PIN rotation that revokes guest sessions also revokes DJ sessions. The link still works and creates a new one.
 
 Guests add `track` or `genre` text while `guestCanUpload` is true. The list stays readable in `read_only`. Rows are soft-deleted. The share cap is `musicCreateCap` in `@vgb/core`: minimum 3, two above the per-author average, hard stop 40. Soft-deleted and already handled rows still count. There is also a pace limit of 8 creates per 10 minutes per session.
+
+Photos stay on `/w/[slug]`. Suggestions are a separate page, `/w/[slug]/music`. The sticky header links **Zdjęcia** and **Utwory** only while the module is enabled. `/music` redirects to the gallery when the module is off. An already open music page that then gets 404 keeps the list and hides the form. The upload bar is mounted for both guest pages, so a queued photo keeps going when the guest opens tracks. DJ entry stays outside that group. Create, delete, status change, and a fair-queue rerank publish `music.changed` on `vgb_media`. That event carries only `weddingId`. The music page replaces `open`, `history`, and the caps from `GET /music` and leaves the form draft in place. Order still comes from `listOpen` and `listHistory`.
 
 Fair queue off: open rows follow `created_at`. Fair queue on: the first 3 open rows keep their `queue_rank`. New rows are inserted only after that head. Rank is written on create and when the couple changes the setting, not on page refresh. Marking `played` or `skipped` hides the row from the queue and keeps its rank, so undo puts it back. Everyone sees `author_name` (or "Gość"). Session ids are not in the JSON.
 
@@ -189,8 +191,8 @@ All under `/api/w/[slug]`. Slug must match `^[a-z2-7]{24}$`.
 | `GET /media?cursor&limit`          | Guest while gallery is open, or a wedding member        | Ready items only. `{ items: GalleryItem[], nextCursor }`. `Cache-Control: private, no-store`                                                                                          |
 | `GET /media/[mediaId]/file?v=`     | Same viewer rule. Hidden media only for wedding members | 302 to signed URL, or JSON playback for `v=play`                                                                                                                                      |
 | `DELETE /media/[mediaId]`          | Guest who uploaded it (`guestSessionId` match)          | 204, status `deleted`, NOTIFY, enqueue `media-purge`, audit `media.guest_delete`                                                                                                      |
-| `GET /events`                      | Guest cookie                                            | `text/event-stream`. Events `media.ready`, `media.removed`, `resync`. 429 when caps hit                                                                                               |
-| `GET /music`                       | Guest cookie, module enabled                            | `{ open, history, capRemaining, atSafetyCap, isDj, canMutate }`. 404 if the module is off                                                                                                          |
+| `GET /events`                      | Guest cookie                                            | `text/event-stream`. Events `media.ready`, `media.removed`, `music.changed`, `resync`. 429 when caps hit                                                                              |
+| `GET /music`                       | Guest cookie, module enabled                            | `{ open, history, capRemaining, atSafetyCap, isDj, canMutate }`. 404 if the module is off                                                                                             |
 | `POST /music`                      | Guest cookie, upload window open                        | Body `{ kind: track\|genre, body }`. 201 entry. 413 share cap, 429 pace, 409 window closed                                                                                            |
 | `DELETE /music/[id]`               | Author of the row                                       | 204 soft delete. 404 for someone else's row                                                                                                                                           |
 | `POST /music/[id]/status`          | DJ session only                                         | Body `{ status: open\|played\|skipped }`. 403 for a normal guest                                                                                                                      |
@@ -324,7 +326,7 @@ Defined once in `packages/core/src/jobs.ts` (`QUEUE_CONFIG`).
 | `apps/web/src/lib/auth.ts`        | better-auth, db, mailer  | Couple auth and tenant bootstrap                                                             |
 | `apps/web/src/lib/guest.ts`       | core, db                 | Guest cookie and `resolveViewer` / `resolveGuest`                                            |
 | `apps/web/src/lib/realtime.ts`    | db, `pg`                 | SSE hub                                                                                      |
-| `apps/web/src/components/guest/*` | web lib types            | Upload queue, gallery merge, live mode                                                       |
+| `apps/web/src/components/guest/*` | web lib types            | Upload queue, gallery merge, live gallery, live music list, section nav                      |
 | `apps/worker/src/index.ts`        | pg-boss, jobs            | Queue workers and graceful shutdown (60 s)                                                   |
 
 Email templates in `emails`: `verifyEmail`, `resetPassword`, `magicLink`, `invite`, `exportReady`, `deletionScheduled`, `deletionReminder`.

@@ -4,35 +4,28 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/card';
 import { Input, Label } from '@/components/ui/input';
-import type { MusicEntry } from '@/lib/music';
-
-export interface MusicPanelData {
-  isDj: boolean;
-  canMutate: boolean;
-  capRemaining: number;
-  atSafetyCap: boolean;
-  open: MusicEntry[];
-  history: MusicEntry[];
-}
+import type { MusicPanelData } from '@/lib/music';
 
 function authorLabel(name: string | null): string {
   const trimmed = name?.trim();
   return trimmed ? trimmed : 'Gość';
 }
 
-export function MusicPanel({ slug, initial }: { slug: string; initial: MusicPanelData }) {
-  const [data, setData] = useState(initial);
+export function MusicPanel({
+  slug,
+  data,
+  reload,
+  moduleOff,
+}: {
+  slug: string;
+  data: MusicPanelData;
+  reload: () => Promise<void>;
+  moduleOff: boolean;
+}) {
   const [kind, setKind] = useState<'track' | 'genre'>('track');
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-
-  async function reload() {
-    const res = await fetch(`/api/w/${slug}/music`, { cache: 'no-store' });
-    if (!res.ok) return;
-    const next = (await res.json()) as MusicPanelData;
-    setData(next);
-  }
 
   async function createSuggestion() {
     setPending(true);
@@ -94,7 +87,11 @@ export function MusicPanel({ slug, initial }: { slug: string; initial: MusicPane
         </Alert>
       ) : null}
 
-      {data.canMutate ? (
+      {moduleOff ? (
+        <Alert className="mt-4">
+          Propozycje muzyczne są wyłączone. Listę możesz nadal oglądać.
+        </Alert>
+      ) : data.canMutate ? (
         <form
           className="mt-4 flex flex-col gap-3"
           onSubmit={(e) => {
@@ -150,7 +147,9 @@ export function MusicPanel({ slug, initial }: { slug: string; initial: MusicPane
         Kolejka
       </h3>
       {data.open.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground">Nikt jeszcze nic nie zgłosił.</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {data.history.length === 0 ? 'Nikt jeszcze nic nie zgłosił.' : 'Kolejka jest pusta.'}
+        </p>
       ) : (
         <ul className="mt-2 divide-y divide-border">
           {data.open.map((item) => (
@@ -161,7 +160,7 @@ export function MusicPanel({ slug, initial }: { slug: string; initial: MusicPane
                   {item.kind === 'track' ? 'Utwór' : 'Gatunek'} · {authorLabel(item.authorName)}
                 </p>
               </div>
-              {data.canMutate ? (
+              {data.canMutate && !moduleOff ? (
                 <div className="flex flex-wrap gap-2">
                   {data.isDj ? (
                     <>
@@ -208,7 +207,7 @@ export function MusicPanel({ slug, initial }: { slug: string; initial: MusicPane
                     {authorLabel(item.authorName)}
                   </p>
                 </div>
-                {data.isDj && data.canMutate ? (
+                {data.isDj && data.canMutate && !moduleOff ? (
                   <Button size="sm" variant="ghost" onClick={() => void setStatus(item.id, 'open')}>
                     Cofnij do kolejki
                   </Button>
