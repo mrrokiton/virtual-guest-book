@@ -15,6 +15,7 @@ import {
   generateSlug,
   generateToken,
   MAX_UPLOAD_DAYS,
+  MUSIC_MODULE_KEY,
   mediaPurgeRequest,
   QUEUE_CONFIG,
   QUEUES,
@@ -406,5 +407,77 @@ export async function requestExportAction(_: ActionState, form: FormData): Promi
       targetId: row.id,
     });
     return { ok: 'Przygotowujemy paczkę ZIP. Wyślemy e-mail, gdy będzie gotowa.' };
+  });
+}
+
+export async function setMusicModuleAction(_: ActionState, form: FormData): Promise<ActionState> {
+  return withAccess(form.get('weddingId'), 'wedding.edit', async ({ wedding, user }) => {
+    if (!adminCanEdit(toLifecycle(wedding))) {
+      return { error: 'W tym stanie wesela nie można zmienić propozycji muzycznych.' };
+    }
+    const enabled = form.get('enabled') === 'on';
+    const fairQueue = form.get('fairQueue') === 'on';
+    const scope = weddingScope(db(), wedding.id);
+    await scope.modules.set(MUSIC_MODULE_KEY, enabled, { fairQueue });
+    await scope.music.rerank(fairQueue);
+    await scope.audit({
+      actorType: 'user',
+      actorId: user.id,
+      action: 'music.module',
+      metadata: { enabled, fairQueue },
+    });
+    return {
+      ok: enabled ? 'Propozycje muzyczne są włączone.' : 'Propozycje muzyczne są wyłączone.',
+    };
+  });
+}
+
+export async function createDjLinkAction(_: ActionState, form: FormData): Promise<ActionState> {
+  return withAccess(form.get('weddingId'), 'wedding.edit', async ({ wedding, user }) => {
+    if (!adminCanEdit(toLifecycle(wedding))) {
+      return { error: 'W tym stanie wesela nie można dodać linku DJ-a.' };
+    }
+    const label =
+      String(form.get('label') ?? '')
+        .trim()
+        .slice(0, 80) || null;
+    const token = generateToken();
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const scope = weddingScope(db(), wedding.id);
+    const link = await scope.djLinks.create({
+      tokenHash,
+      label,
+      createdByUserId: user.id,
+    });
+    await scope.audit({
+      actorType: 'user',
+      actorId: user.id,
+      action: 'dj_link.created',
+      targetType: 'wedding_dj_link',
+      targetId: link.id,
+    });
+    const url = `${env().APP_URL}/w/${wedding.slug}/dj/${token}`;
+    return {
+      ok: `Skopiuj link teraz. Później nie da się go odczytać: ${url}`,
+    };
+  });
+}
+
+export async function revokeDjLinkAction(_: ActionState, form: FormData): Promise<ActionState> {
+  return withAccess(form.get('weddingId'), 'wedding.edit', async ({ wedding, user }) => {
+    const linkId = z.uuid().safeParse(form.get('linkId'));
+    if (!linkId.success) return { error: 'Nieprawidłowy link.' };
+    const scope = weddingScope(db(), wedding.id);
+    const revoked = await scope.djLinks.revoke(linkId.data);
+    if (!revoked) return { error: 'Ten link jest już odwołany.' };
+    await scope.guestSessions.revokeForLink(linkId.data);
+    await scope.audit({
+      actorType: 'user',
+      actorId: user.id,
+      action: 'dj_link.revoked',
+      targetType: 'wedding_dj_link',
+      targetId: linkId.data,
+    });
+    return { ok: 'Link DJ-a został odwołany.' };
   });
 }

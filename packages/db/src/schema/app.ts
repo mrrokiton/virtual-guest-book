@@ -1,4 +1,13 @@
-import type { MediaKind, MediaStatus, PlanId, WeddingRole, WeddingStatus } from '@vgb/core';
+import type {
+  GuestSessionRole,
+  MediaKind,
+  MediaStatus,
+  MusicKind,
+  MusicStatus,
+  PlanId,
+  WeddingRole,
+  WeddingStatus,
+} from '@vgb/core';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -133,6 +142,25 @@ export const weddingInvites = pgTable(
   ],
 );
 
+export const weddingDjLinks = pgTable(
+  'wedding_dj_links',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    weddingId: uuid('wedding_id')
+      .notNull()
+      .references(() => weddings.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    label: text('label'),
+    createdByUserId: text('created_by_user_id').references(() => user.id, { onDelete: 'set null' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('wedding_dj_links_token_idx').on(t.tokenHash),
+    index('wedding_dj_links_wedding_idx').on(t.weddingId),
+  ],
+);
+
 export const guestSessions = pgTable(
   'guest_sessions',
   {
@@ -141,12 +169,41 @@ export const guestSessions = pgTable(
       .notNull()
       .references(() => weddings.id, { onDelete: 'cascade' }),
     displayName: text('display_name'),
+    role: text('role').$type<GuestSessionRole>().notNull().default('guest'),
+    djLinkId: uuid('dj_link_id').references(() => weddingDjLinks.id, { onDelete: 'set null' }),
     termsAcceptedAt: timestamp('terms_accepted_at', { withTimezone: true }).notNull(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [index('guest_sessions_wedding_idx').on(t.weddingId)],
+);
+
+export const musicSuggestions = pgTable(
+  'music_suggestions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    weddingId: uuid('wedding_id')
+      .notNull()
+      .references(() => weddings.id, { onDelete: 'cascade' }),
+    guestSessionId: uuid('guest_session_id').references(() => guestSessions.id, {
+      onDelete: 'set null',
+    }),
+    authorName: text('author_name'),
+    kind: text('kind').$type<MusicKind>().notNull(),
+    body: text('body').notNull(),
+    bodyKey: text('body_key').notNull(),
+    status: text('status').$type<MusicStatus>().notNull().default('open'),
+    queueRank: integer('queue_rank'),
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    statusChangedAt: timestamp('status_changed_at', { withTimezone: true }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('music_suggestions_queue_idx').on(t.weddingId, t.deletedAt, t.status, t.queueRank),
+    index('music_suggestions_session_idx').on(t.guestSessionId),
+  ],
 );
 
 export interface PhotoVariantKeys {

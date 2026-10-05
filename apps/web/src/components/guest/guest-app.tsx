@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/card';
 import type { GalleryItem } from '@/lib/weddings';
 import { Lightbox } from './lightbox';
+import { MusicPanel, type MusicPanelData } from './music-panel';
 import { useLiveGallery } from './use-live-gallery';
 import { useUploadQueue, type UploadLimits, type UploadTask } from './use-upload-queue';
 
@@ -152,6 +153,7 @@ export function GuestApp({
   limits,
   initialItems,
   initialCursor,
+  music = null,
 }: {
   slug: string;
   headline: string;
@@ -160,6 +162,7 @@ export function GuestApp({
   limits: UploadLimits;
   initialItems: GalleryItem[];
   initialCursor: string | null;
+  music?: MusicPanelData | null;
 }) {
   const gallery = useLiveGallery(slug, initialItems, initialCursor);
   const my = useMyUploads(slug);
@@ -262,6 +265,7 @@ export function GuestApp({
             ))}
           </div>
         )}
+        {music ? <MusicPanel slug={slug} initial={music} /> : null}
         <div ref={sentinel} className="h-10" />
         {gallery.loadingMore && (
           <Loader2 className="mx-auto size-6 animate-spin text-muted-foreground" />
