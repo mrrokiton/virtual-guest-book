@@ -156,13 +156,13 @@ export function MusicPanel({
             <li key={item.id} className="flex items-start justify-between gap-3 py-3">
               <div className="min-w-0">
                 <p className="font-medium">{item.body}</p>
-                <p className="text-sm">{authorLabel(item.authorName)}</p>
                 <p className="text-xs text-muted-foreground">
                   {item.kind === 'track' ? 'Utwór' : 'Gatunek'}
                 </p>
+                <p className="text-sm">{authorLabel(item.authorName)}</p>
               </div>
               {data.canMutate && !moduleOff ? (
-                <div className="flex shrink-0 flex-col gap-2">
+                <div className="flex shrink-0 flex-row gap-2">
                   {data.isDj ? (
                     <>
                       <Button
@@ -199,7 +199,7 @@ export function MusicPanel({
             Historia
           </h3>
           <ul className="mt-2 divide-y divide-border">
-            {data.history.map((item) => (
+            {data.history.slice(0, 3).map((item) => (
               <li key={item.id} className="flex items-start justify-between gap-3 py-3">
                 <div className="min-w-0">
                   <p className="font-medium">{item.body}</p>
