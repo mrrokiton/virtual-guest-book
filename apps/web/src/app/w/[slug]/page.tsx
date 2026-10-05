@@ -1,4 +1,10 @@
-import { guestCanUpload, guestCanView, planLimits, VIDEO_DURATION_TOLERANCE_S } from '@vgb/core';
+import {
+  guestCanUpload,
+  guestCanView,
+  musicCreateCap,
+  planLimits,
+  VIDEO_DURATION_TOLERANCE_S,
+} from '@vgb/core';
 import { weddingScope, type Wedding } from '@vgb/db';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
@@ -6,6 +12,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { GuestApp } from '@/components/guest/guest-app';
 import { PinForm } from '@/components/guest/pin-form';
 import { findWedding, getGuestSession } from '@/lib/guest';
+import { loadMusicModule, toMusicEntry } from '@/lib/music';
 import { db, video } from '@/lib/server';
 import { formatDate } from '@/lib/utils';
 import { toGalleryItem } from '@/lib/weddings';
@@ -104,9 +111,24 @@ export default async function GuestPage({ params }: Props) {
   }
 
   const limits = planLimits(wedding.plan);
-  const page = await weddingScope(db(), wedding.id).media.gallery({ cursor: null, limit: 30 });
-  const hasVideoThumb = video().name === 'cloudflare';
   const now = new Date();
+  const scope = weddingScope(db(), wedding.id);
+  const musicModule = await loadMusicModule(wedding.id);
+  let music = null;
+  if (musicModule) {
+    const capInput = await scope.music.durableCapInput(session.id);
+    const [open, history] = await Promise.all([scope.music.listOpen(), scope.music.listHistory()]);
+    music = {
+      isDj: session.role === 'dj',
+      canMutate: guestCanUpload(wedding, now),
+      capRemaining: Math.max(0, musicCreateCap(capInput) - capInput.mine),
+      atSafetyCap: capInput.mine >= 40,
+      open: open.map((row) => toMusicEntry(row, session.id)),
+      history: history.map((row) => toMusicEntry(row, session.id)),
+    };
+  }
+  const page = await scope.media.gallery({ cursor: null, limit: 30 });
+  const hasVideoThumb = video().name === 'cloudflare';
 
   return (
     <Shell wedding={wedding}>
@@ -123,6 +145,7 @@ export default async function GuestPage({ params }: Props) {
         }}
         initialItems={page.items.map((m) => toGalleryItem(slug, m, hasVideoThumb))}
         initialCursor={page.nextCursor}
+        music={music}
       />
     </Shell>
   );

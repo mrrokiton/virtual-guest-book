@@ -15,6 +15,8 @@ usuwane.
 | `packages/db`       | Schemat Drizzle, migracje, dostęp do danych ograniczony do jednego wesela  |
 | `packages/services` | Konfiguracja (Zod), storage S3/R2, Cloudflare Stream, e-mail               |
 | `docs/runbook.md`   | Wdrożenie, konfiguracja usług, postępowanie przy awariach                  |
+| `PROJECT_MAP.md`    | Mapa architektury dla agentów AI: API, schemat, przepływy, konwencje       |
+| `AGENTS.md`         | Polecenie: przeczytaj `PROJECT_MAP.md` przed zmianami w kodzie             |
 
 ## Uruchomienie lokalne
 

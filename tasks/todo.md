@@ -1,6 +1,6 @@
 # Wirtualna księga gości weselnych: plan MVP
 
-Status: ZATWIERDZONY (26.09.2026). Etapy 0–11 zaimplementowane w kodzie. Otwarte: uruchomienie E2E
+Status: ZATWIERDZONY (26.09.2026). Etapy 0–11 zaimplementowane w kodzie. Plan propozycji muzycznych dla DJ-a: `tasks/music-suggestions.md` (osobno, ten plik zostaje planem MVP). Otwarte: uruchomienie E2E
 (wymaga Dockera lokalnie lub CI), wdrożenie na staging/produkcję i test k6 (wymagają kont i danych
 dostępowych), formalny przegląd `/cso`.
 

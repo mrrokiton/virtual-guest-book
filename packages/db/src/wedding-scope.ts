@@ -12,6 +12,16 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import {
+  disableFairQueue,
+  enableFairQueue,
+  insertMusicSuggestion,
+  type GuestSessionRole,
+  type MusicAuthorLoad,
+  type MusicKind,
+  type MusicQueueItem,
+  type MusicStatus,
+} from '@vgb/core';
 import type { MediaStatus } from '@vgb/core';
 import type { Database } from './client';
 import { decodeCursor, encodeCursor } from './cursor';
@@ -20,6 +30,8 @@ import {
   exports,
   guestSessions,
   media,
+  musicSuggestions,
+  weddingDjLinks,
   weddingMembers,
   weddingModules,
   user,
@@ -52,8 +64,47 @@ const UPLOAD_COUNTED_FOR_MS = 60 * 60 * 1000;
  * The only way application code reads or writes per-wedding rows. Every query built here is
  * constrained to `weddingId`, so a bug in a caller cannot leak another wedding's data.
  */
+export type MusicSuggestion = typeof musicSuggestions.$inferSelect;
+
+function toQueueItem(row: MusicSuggestion): MusicQueueItem {
+  return {
+    id: row.id,
+    sessionId: row.guestSessionId ?? row.id,
+    createdAt: row.createdAt,
+    queueRank: row.queueRank,
+  };
+}
+
+function authorLoads(rows: MusicSuggestion[]): MusicAuthorLoad[] {
+  const loads = new Map<string, MusicAuthorLoad>();
+  for (const row of rows) {
+    if (row.deletedAt || !row.guestSessionId) continue;
+    const current = loads.get(row.guestSessionId) ?? {
+      sessionId: row.guestSessionId,
+      openCount: 0,
+      doneCount: 0,
+    };
+    if (row.status === 'open') current.openCount += 1;
+    else current.doneCount += 1;
+    loads.set(row.guestSessionId, current);
+  }
+  return [...loads.values()];
+}
+
+async function writeMusicRanks(db: Database, weddingId: string, ranked: MusicQueueItem[]) {
+  for (const item of ranked) {
+    if (item.queueRank == null) continue;
+    await db
+      .update(musicSuggestions)
+      .set({ queueRank: item.queueRank })
+      .where(and(eq(musicSuggestions.weddingId, weddingId), eq(musicSuggestions.id, item.id)));
+  }
+}
+
 export function weddingScope(db: Database, weddingId: string) {
   const mediaIn = (...conds: (SQL | undefined)[]) => and(eq(media.weddingId, weddingId), ...conds);
+  const musicWhere = (...conds: (SQL | undefined)[]) =>
+    and(eq(musicSuggestions.weddingId, weddingId), ...conds);
 
   async function mediaPage(
     where: SQL | undefined,
@@ -192,10 +243,20 @@ export function weddingScope(db: Database, weddingId: string) {
     },
 
     guestSessions: {
-      async create(values: { displayName: string | null }): Promise<GuestSession> {
+      async create(values: {
+        displayName: string | null;
+        role?: GuestSessionRole;
+        djLinkId?: string | null;
+      }): Promise<GuestSession> {
         const [row] = await db
           .insert(guestSessions)
-          .values({ weddingId, displayName: values.displayName, termsAcceptedAt: new Date() })
+          .values({
+            weddingId,
+            displayName: values.displayName,
+            role: values.role ?? 'guest',
+            djLinkId: values.djLinkId ?? null,
+            termsAcceptedAt: new Date(),
+          })
           .returning();
         return row!;
       },
@@ -227,6 +288,229 @@ export function weddingScope(db: Database, weddingId: string) {
           .update(guestSessions)
           .set({ revokedAt: new Date() })
           .where(and(eq(guestSessions.weddingId, weddingId), isNull(guestSessions.revokedAt)));
+      },
+
+      async revokeForLink(linkId: string): Promise<void> {
+        await db
+          .update(guestSessions)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(guestSessions.weddingId, weddingId),
+              eq(guestSessions.djLinkId, linkId),
+              isNull(guestSessions.revokedAt),
+            ),
+          );
+      },
+    },
+
+    djLinks: {
+      async create(values: { tokenHash: string; label: string | null; createdByUserId: string }) {
+        const [row] = await db
+          .insert(weddingDjLinks)
+          .values({ weddingId, ...values })
+          .returning();
+        return row!;
+      },
+
+      list() {
+        return db
+          .select()
+          .from(weddingDjLinks)
+          .where(eq(weddingDjLinks.weddingId, weddingId))
+          .orderBy(desc(weddingDjLinks.createdAt));
+      },
+
+      async getActiveByTokenHash(tokenHash: string) {
+        const [row] = await db
+          .select()
+          .from(weddingDjLinks)
+          .where(
+            and(
+              eq(weddingDjLinks.weddingId, weddingId),
+              eq(weddingDjLinks.tokenHash, tokenHash),
+              isNull(weddingDjLinks.revokedAt),
+            ),
+          )
+          .limit(1);
+        return row ?? null;
+      },
+
+      async revoke(id: string) {
+        const [row] = await db
+          .update(weddingDjLinks)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(weddingDjLinks.weddingId, weddingId),
+              eq(weddingDjLinks.id, id),
+              isNull(weddingDjLinks.revokedAt),
+            ),
+          )
+          .returning();
+        return row ?? null;
+      },
+    },
+
+    music: {
+      listOpen() {
+        return db
+          .select()
+          .from(musicSuggestions)
+          .where(
+            musicWhere(isNull(musicSuggestions.deletedAt), eq(musicSuggestions.status, 'open')),
+          )
+          .orderBy(musicSuggestions.queueRank, musicSuggestions.createdAt, musicSuggestions.id);
+      },
+
+      listHistory() {
+        return db
+          .select()
+          .from(musicSuggestions)
+          .where(
+            musicWhere(
+              isNull(musicSuggestions.deletedAt),
+              inArray(musicSuggestions.status, ['played', 'skipped']),
+            ),
+          )
+          .orderBy(desc(musicSuggestions.statusChangedAt), desc(musicSuggestions.id));
+      },
+
+      async get(id: string) {
+        const [row] = await db
+          .select()
+          .from(musicSuggestions)
+          .where(musicWhere(eq(musicSuggestions.id, id), isNull(musicSuggestions.deletedAt)))
+          .limit(1);
+        return row ?? null;
+      },
+
+      async hasActiveDuplicate(sessionId: string, kind: MusicKind, bodyKey: string) {
+        const [row] = await db
+          .select({ id: musicSuggestions.id })
+          .from(musicSuggestions)
+          .where(
+            musicWhere(
+              eq(musicSuggestions.guestSessionId, sessionId),
+              eq(musicSuggestions.kind, kind),
+              eq(musicSuggestions.bodyKey, bodyKey),
+              isNull(musicSuggestions.deletedAt),
+            ),
+          )
+          .limit(1);
+        return Boolean(row);
+      },
+
+      async durableCapInput(sessionId: string) {
+        const rows = await db
+          .select({
+            sessionId: musicSuggestions.guestSessionId,
+            n: count(),
+          })
+          .from(musicSuggestions)
+          .where(eq(musicSuggestions.weddingId, weddingId))
+          .groupBy(musicSuggestions.guestSessionId);
+        let total = 0;
+        let mine = 0;
+        let authorCount = 0;
+        for (const row of rows) {
+          total += row.n;
+          if (row.n > 0) authorCount += 1;
+          if (row.sessionId === sessionId) mine = row.n;
+        }
+        return { mine, totalDurable: total, authorCount };
+      },
+
+      async create(values: {
+        guestSessionId: string;
+        authorName: string | null;
+        kind: MusicKind;
+        body: string;
+        bodyKey: string;
+        fairQueue: boolean;
+      }) {
+        return db.transaction(async (tx) => {
+          const trx = tx as unknown as Database;
+          const [created] = await trx
+            .insert(musicSuggestions)
+            .values({
+              weddingId,
+              guestSessionId: values.guestSessionId,
+              authorName: values.authorName,
+              kind: values.kind,
+              body: values.body,
+              bodyKey: values.bodyKey,
+              status: 'open',
+            })
+            .returning();
+          const row = created!;
+          const existing = await trx
+            .select()
+            .from(musicSuggestions)
+            .where(
+              and(eq(musicSuggestions.weddingId, weddingId), isNull(musicSuggestions.deletedAt)),
+            );
+          const open = existing.filter((item) => item.status === 'open' && item.id !== row.id);
+          const ranked = insertMusicSuggestion({
+            fairQueue: values.fairQueue,
+            open: open.map(toQueueItem),
+            insert: toQueueItem(row),
+            authors: authorLoads(existing),
+          });
+          await writeMusicRanks(trx, weddingId, ranked);
+          const placed = ranked.find((item) => item.id === row.id);
+          return { ...row, queueRank: placed?.queueRank ?? row.queueRank };
+        });
+      },
+
+      async setStatus(id: string, status: MusicStatus) {
+        const [row] = await db
+          .update(musicSuggestions)
+          .set({
+            status,
+            statusChangedAt: status === 'open' ? null : new Date(),
+          })
+          .where(
+            musicWhere(
+              eq(musicSuggestions.id, id),
+              isNull(musicSuggestions.deletedAt),
+              ne(musicSuggestions.status, status),
+            ),
+          )
+          .returning();
+        return row ?? null;
+      },
+
+      async softDelete(id: string, sessionId: string) {
+        const [row] = await db
+          .update(musicSuggestions)
+          .set({ deletedAt: new Date() })
+          .where(
+            musicWhere(
+              eq(musicSuggestions.id, id),
+              eq(musicSuggestions.guestSessionId, sessionId),
+              isNull(musicSuggestions.deletedAt),
+            ),
+          )
+          .returning();
+        return row ?? null;
+      },
+
+      async rerank(fairQueue: boolean) {
+        await db.transaction(async (tx) => {
+          const trx = tx as unknown as Database;
+          const existing = await trx
+            .select()
+            .from(musicSuggestions)
+            .where(
+              and(eq(musicSuggestions.weddingId, weddingId), isNull(musicSuggestions.deletedAt)),
+            );
+          const open = existing.filter((item) => item.status === 'open').map(toQueueItem);
+          const ranked = fairQueue
+            ? enableFairQueue(open, authorLoads(existing))
+            : disableFairQueue(open);
+          await writeMusicRanks(trx, weddingId, ranked);
+        });
       },
     },
 

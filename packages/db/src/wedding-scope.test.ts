@@ -203,3 +203,33 @@ describe('usage', () => {
     expect(await scope.media.usage(later)).toEqual({ total: 1, videos: 1 });
   });
 });
+
+describe('music suggestions', () => {
+  it('does not leak suggestions across weddings and only the author can delete', async () => {
+    const a = await makeWedding('Music A');
+    const b = await makeWedding('Music B');
+    const scopeA = weddingScope(db, a.wedding.id);
+    const scopeB = weddingScope(db, b.wedding.id);
+    const author = await scopeA.guestSessions.create({ displayName: 'Ola' });
+    const stranger = await scopeA.guestSessions.create({ displayName: 'Jan' });
+    const row = await scopeA.music.create({
+      guestSessionId: author.id,
+      authorName: 'Ola',
+      kind: 'track',
+      body: 'Dancing Queen',
+      bodyKey: 'dancing queen',
+      fairQueue: false,
+    });
+
+    expect(await scopeB.music.get(row.id)).toBeNull();
+    expect((await scopeA.music.listOpen()).map((item) => item.id)).toEqual([row.id]);
+    expect(await scopeA.music.softDelete(row.id, stranger.id)).toBeNull();
+    expect(await scopeA.music.softDelete(row.id, author.id)).not.toBeNull();
+    expect(await scopeA.music.listOpen()).toEqual([]);
+    expect(await scopeA.music.durableCapInput(author.id)).toMatchObject({
+      mine: 1,
+      totalDurable: 1,
+      authorCount: 1,
+    });
+  });
+});
