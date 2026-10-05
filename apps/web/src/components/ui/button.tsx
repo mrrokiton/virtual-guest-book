@@ -12,6 +12,7 @@ export const buttonVariants = cva(
         outline: 'border border-border bg-card hover:bg-muted',
         ghost: 'hover:bg-muted',
         destructive: 'bg-destructive text-white hover:bg-destructive/90',
+        success: 'bg-success text-white hover:bg-success/90',
       },
       size: {
         sm: 'h-8 px-3',

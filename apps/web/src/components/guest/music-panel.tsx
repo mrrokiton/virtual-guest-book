@@ -153,27 +153,28 @@ export function MusicPanel({
       ) : (
         <ul className="mt-2 divide-y divide-border">
           {data.open.map((item) => (
-            <li key={item.id} className="flex flex-col gap-2 py-3">
-              <div>
+            <li key={item.id} className="flex items-start justify-between gap-3 py-3">
+              <div className="min-w-0">
                 <p className="font-medium">{item.body}</p>
-                <p className="text-sm text-muted-foreground">
-                  {item.kind === 'track' ? 'Utwór' : 'Gatunek'} · {authorLabel(item.authorName)}
+                <p className="text-sm">{authorLabel(item.authorName)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {item.kind === 'track' ? 'Utwór' : 'Gatunek'}
                 </p>
               </div>
               {data.canMutate && !moduleOff ? (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex shrink-0 flex-col gap-2">
                   {data.isDj ? (
                     <>
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant="success"
                         onClick={() => void setStatus(item.id, 'played')}
                       >
                         Zagrane
                       </Button>
                       <Button
                         size="sm"
-                        variant="outline"
+                        variant="destructive"
                         onClick={() => void setStatus(item.id, 'skipped')}
                       >
                         Pomiń
@@ -181,7 +182,7 @@ export function MusicPanel({
                     </>
                   ) : null}
                   {item.mine ? (
-                    <Button size="sm" variant="ghost" onClick={() => void remove(item.id)}>
+                    <Button size="sm" variant="destructive" onClick={() => void remove(item.id)}>
                       Usuń
                     </Button>
                   ) : null}
@@ -199,8 +200,8 @@ export function MusicPanel({
           </h3>
           <ul className="mt-2 divide-y divide-border">
             {data.history.map((item) => (
-              <li key={item.id} className="flex flex-col gap-2 py-3">
-                <div>
+              <li key={item.id} className="flex items-start justify-between gap-3 py-3">
+                <div className="min-w-0">
                   <p className="font-medium">{item.body}</p>
                   <p className="text-sm text-muted-foreground">
                     {item.status === 'played' ? 'Zagrane' : 'Pominięte'} ·{' '}
@@ -208,7 +209,12 @@ export function MusicPanel({
                   </p>
                 </div>
                 {data.isDj && data.canMutate && !moduleOff ? (
-                  <Button size="sm" variant="ghost" onClick={() => void setStatus(item.id, 'open')}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => void setStatus(item.id, 'open')}
+                  >
                     Cofnij do kolejki
                   </Button>
                 ) : null}
