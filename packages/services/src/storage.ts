@@ -58,7 +58,7 @@ export class Storage {
 
   presignGet(
     key: string,
-    opts: { expiresIn?: number; downloadName?: string } = {},
+    opts: { expiresIn?: number; downloadName?: string; responseContentType?: string } = {},
   ): Promise<string> {
     return getSignedUrl(
       this.presignClient,
@@ -68,6 +68,7 @@ export class Storage {
         ResponseContentDisposition: opts.downloadName
           ? `attachment; filename="${opts.downloadName.replace(/[^\w.-]/g, '_')}"`
           : undefined,
+        ResponseContentType: opts.responseContentType,
       }),
       { expiresIn: opts.expiresIn ?? 10 * 60 },
     );

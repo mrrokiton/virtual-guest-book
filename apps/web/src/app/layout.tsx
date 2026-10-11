@@ -1,4 +1,6 @@
 import type { Metadata, Viewport } from 'next';
+import { ThemeToggle } from '@/components/theme-toggle';
+import { THEME_COLORS, colorSchemeInitScript } from '@/lib/color-scheme';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -9,13 +11,19 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#fbf8f4',
+  themeColor: THEME_COLORS.light,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="pl">
-      <body>{children}</body>
+    <html lang="pl" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: colorSchemeInitScript() }} />
+      </head>
+      <body>
+        <ThemeToggle />
+        {children}
+      </body>
     </html>
   );
 }

@@ -11,7 +11,13 @@
   --color-primary-foreground: #ffffff;
   --color-accent: #b08d57;
   --color-destructive: #b3261e;
+  --color-danger-foreground: #b3261e;
   --color-success: #2f6b3b;
+  --color-success-foreground: #2f6b3b;
+  --color-success-muted: #e7f2ea;
+  --color-warning: #7a4e12;
+  --color-warning-muted: #f8eedd;
+  --color-danger-muted: #f8e8e6;
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, ui-serif, serif;
@@ -19,8 +25,27 @@
   --radius-lg: 0.75rem;
 }
 
+/* Same token names as @theme. A missing stored choice follows the system via the head script. */
+.dark {
+  color-scheme: dark;
+  --color-background: #1c1614;
+  --color-foreground: #f6f0ea;
+  --color-card: #2a221f;
+  --color-muted: #3a302c;
+  --color-muted-foreground: #c4b5ab;
+  --color-border: #4a3d37;
+  --color-accent: #d4b483;
+  --color-danger-foreground: #ffb4ab;
+  --color-success-foreground: #9ddeb0;
+  --color-success-muted: #1a3324;
+  --color-warning: #f0d7a4;
+  --color-warning-muted: #3a2e18;
+  --color-danger-muted: #3d221f;
+}
+
 @layer base {
   html {
+    color-scheme: light;
     -webkit-text-size-adjust: 100%;
   }
   body {
@@ -39,6 +64,27 @@
 @media print {
   .no-print {
     display: none !important;
+  }
+  html.dark,
+  html {
+    color-scheme: light;
+    --color-background: #fbf8f4;
+    --color-foreground: #2b2320;
+    --color-card: #ffffff;
+    --color-muted: #f3ede6;
+    --color-muted-foreground: #7d6f68;
+    --color-border: #e6ddd3;
+    --color-primary: #7c4d3a;
+    --color-primary-foreground: #ffffff;
+    --color-accent: #b08d57;
+    --color-destructive: #b3261e;
+    --color-danger-foreground: #b3261e;
+    --color-success: #2f6b3b;
+    --color-success-foreground: #2f6b3b;
+    --color-success-muted: #e7f2ea;
+    --color-warning: #7a4e12;
+    --color-warning-muted: #f8eedd;
+    --color-danger-muted: #f8e8e6;
   }
   body {
     background: white;

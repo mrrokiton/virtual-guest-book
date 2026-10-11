@@ -25,9 +25,9 @@ export function Badge({
 }: HTMLAttributes<HTMLSpanElement> & { tone?: 'neutral' | 'success' | 'warning' | 'danger' }) {
   const tones = {
     neutral: 'bg-muted text-foreground',
-    success: 'bg-green-100 text-success',
-    warning: 'bg-amber-100 text-amber-800',
-    danger: 'bg-red-100 text-destructive',
+    success: 'bg-success-muted text-success-foreground',
+    warning: 'bg-warning-muted text-warning',
+    danger: 'bg-danger-muted text-danger-foreground',
   };
   return (
     <span
@@ -48,8 +48,8 @@ export function Alert({
 }: HTMLAttributes<HTMLDivElement> & { tone?: 'neutral' | 'danger' | 'success' }) {
   const tones = {
     neutral: 'border-border bg-muted',
-    danger: 'border-red-200 bg-red-50 text-destructive',
-    success: 'border-green-200 bg-green-50 text-success',
+    danger: 'border-danger-muted bg-danger-muted text-danger-foreground',
+    success: 'border-success-muted bg-success-muted text-success-foreground',
   };
   return (
     <div

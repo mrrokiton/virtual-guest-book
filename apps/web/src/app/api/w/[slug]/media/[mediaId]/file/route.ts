@@ -1,5 +1,6 @@
 import { weddingScope } from '@vgb/db';
 import { resolveViewer } from '@/lib/guest';
+import { photoFileAccess } from '@/lib/photo-file';
 import { domainErrorResponse, jsonError } from '@/lib/request';
 import { isUuid } from '@/lib/session';
 import { db, storage, video } from '@/lib/server';
@@ -26,15 +27,27 @@ export async function GET(
       media && (media.status === 'ready' || (viewer.isAdmin && media.status === 'hidden'));
     if (!media || !visible) return jsonError(404, 'Nie znaleziono pliku.');
 
-    const variant = new URL(req.url).searchParams.get('v') ?? 'large';
+    const search = new URL(req.url).searchParams;
+    const variant = search.get('v') ?? 'large';
+    const download = search.get('dl') === '1';
     let url: string | null = null;
 
+    if (download && media.kind !== 'photo') return jsonError(404, 'Nie znaleziono pliku.');
+
     if (media.kind === 'photo') {
-      const key =
-        variant === 'thumb' || variant === 'large' || variant === 'full'
-          ? media.variants[variant]
-          : undefined;
-      url = key ? await storage().presignGet(key, { expiresIn: URL_TTL_SECONDS }) : null;
+      const access = photoFileAccess(variant, download, mediaId);
+      const key = access ? media.variants[access.variant] : undefined;
+      if (access && key) {
+        url = await storage().presignGet(key, {
+          expiresIn: URL_TTL_SECONDS,
+          ...(access.mode === 'download'
+            ? {
+                downloadName: access.downloadName,
+                responseContentType: access.responseContentType,
+              }
+            : {}),
+        });
+      }
     } else {
       const ref = { ...media };
       if (variant === 'thumb') url = await video().thumbnailUrl(ref);

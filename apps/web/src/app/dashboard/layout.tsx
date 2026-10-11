@@ -13,7 +13,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   return (
     <div className="min-h-dvh">
       <header className="no-print border-b border-border bg-card">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 py-3 pl-4 pr-16">
           <Link href="/dashboard" className="font-serif text-lg">
             Księga gości
           </Link>

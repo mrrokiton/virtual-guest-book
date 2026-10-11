@@ -54,7 +54,7 @@ export function GuestHeader({
   degraded: boolean;
 }) {
   return (
-    <header className="sticky top-0 z-20 border-b border-border bg-background/90 px-4 py-3 backdrop-blur">
+    <header className="sticky top-0 z-20 border-b border-border bg-background/90 py-3 pl-4 pr-16 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
         <h1 className="truncate font-serif text-xl">{headline}</h1>
         {degraded && (

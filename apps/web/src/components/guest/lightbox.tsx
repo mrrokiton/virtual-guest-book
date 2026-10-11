@@ -111,9 +111,7 @@ export function Lightbox({
         <div className="flex items-center gap-1">
           {item.kind === 'photo' && (
             <a
-              href={`${fileBase}?v=full`}
-              target="_blank"
-              rel="noopener"
+              href={`${fileBase}?v=full&dl=1`}
               className="rounded-lg p-2.5 hover:bg-white/10"
               aria-label="Pobierz w pełnej jakości"
             >

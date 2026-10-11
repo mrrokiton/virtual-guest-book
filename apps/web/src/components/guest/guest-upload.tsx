@@ -2,8 +2,17 @@
 
 import { CheckCircle2, Film, Loader2, RotateCcw, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { Button } from '@/components/ui/button';
+import { UPLOAD_NOTICE_DISMISS_MS, isSameSuccessBatch, uploadNoticePhase } from './upload-notice';
 import { useUploadQueue, type UploadLimits, type UploadTask } from './use-upload-queue';
 
 type GuestUploadValue = {
@@ -66,7 +75,7 @@ function UploadRow({ task, onRetry }: { task: UploadTask; onRetry: () => void })
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm">{task.name}</p>
         {task.status === 'error' ? (
-          <p className="text-xs text-destructive">{task.error}</p>
+          <p className="text-xs text-danger-foreground">{task.error}</p>
         ) : (
           <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
             <div
@@ -77,7 +86,7 @@ function UploadRow({ task, onRetry }: { task: UploadTask; onRetry: () => void })
         )}
       </div>
       {task.status === 'done' && (
-        <CheckCircle2 className="size-5 text-success" aria-label="Wysłano" />
+        <CheckCircle2 className="size-5 text-success-foreground" aria-label="Wysłano" />
       )}
       {task.status === 'working' && (
         <Loader2 className="size-5 animate-spin text-muted-foreground" aria-label="Wysyłanie" />
@@ -107,6 +116,21 @@ export function GuestUploadProvider({
   const onMusic = pathname.endsWith('/music');
   const barVisible = queue.tasks.length > 0 && showQueue;
   const done = queue.tasks.filter((t) => t.status === 'done').length;
+  const tasks = queue.tasks;
+  const clearFinished = queue.clearFinished;
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+
+  useEffect(() => {
+    if (uploadNoticePhase(tasks) !== 'success') return;
+    const keys = tasks.map((task) => task.key);
+    const timer = window.setTimeout(() => {
+      if (!isSameSuccessBatch(tasksRef.current, keys)) return;
+      clearFinished();
+      setShowQueue(false);
+    }, UPLOAD_NOTICE_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [tasks, clearFinished]);
 
   const add = useCallback(
     (list: FileList | File[]) => {

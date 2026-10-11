@@ -28,7 +28,7 @@ export default async function PlatformAdminPage({
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between pr-14">
         <h1 className="text-2xl font-semibold">Administracja platformy</h1>
         <Link href="/dashboard" className="text-sm underline">
           Panel

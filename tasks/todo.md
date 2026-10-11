@@ -159,3 +159,12 @@ Wyniki przeglądu ręcznego:
 - Brak Dockera na tej maszynie: testy E2E nie były uruchamiane lokalnie (uruchomią się w CI lub po instalacji Docker Desktop: `docker compose up -d && pnpm db:migrate && pnpm build && pnpm test:e2e`).
 - Plik `.env` wygenerowany z losowymi sekretami do pracy lokalnej.
 - Kroki wymagające kont zewnętrznych (Fly.io, Neon, Cloudflare R2/Stream, Resend, Sentry) są przygotowane w kodzie i konfiguracji; uruchomienie wymaga Twoich danych dostępowych.
+
+## Ulepszenia: motyw, komunikaty, pobieranie
+
+Zakres uzgodniony 11.10.2026. Nie zmienia układu, uprawnień ani modelu danych.
+
+- [x] Tryb jasny/ciemny na tokenach z `globals.css`. Przełącznik w prawym górnym rogu. Zapis `vgb:color-scheme`; bez zapisu motyw podąża za systemem.
+- [x] Panel wysyłki chowa się po 4 s, gdy każdy wiersz jest `done`. Błąd zostaje do ręcznego zamknięcia. Starszy timer nie usuwa nowszego komunikatu.
+- [x] Pobranie z lightboxa (`?v=full&dl=1`) idzie podpisanym adresem z `Content-Disposition: attachment` i `application/octet-stream`. Nazwa `zdjecie-{id}.jpg` (wariant `full`, nie plik z aparatu).
+- [x] Testy jednostkowe motywu, panelu i opcji podpisu.
