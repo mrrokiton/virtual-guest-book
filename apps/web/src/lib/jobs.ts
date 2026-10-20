@@ -1,4 +1,4 @@
-import { PG_BOSS_QUEUE_CACHE_SECONDS, QUEUE_CONFIG, QUEUES, type QueueName } from '@vgb/core';
+import { PG_BOSS_BACKGROUND_TIMER_SECONDS, QUEUE_CONFIG, QUEUES, type QueueName } from '@vgb/core';
 import { PgBoss, type SendOptions } from 'pg-boss';
 import { env } from './env';
 
@@ -16,7 +16,8 @@ function boss(): Promise<PgBoss> {
       max: 2,
       supervise: false,
       schedule: false,
-      queueCacheIntervalSeconds: PG_BOSS_QUEUE_CACHE_SECONDS,
+      queueCacheIntervalSeconds: PG_BOSS_BACKGROUND_TIMER_SECONDS,
+      bamIntervalSeconds: PG_BOSS_BACKGROUND_TIMER_SECONDS,
     });
     b.on('error', (err) => console.error('[pg-boss]', err));
     await b.start();

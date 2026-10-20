@@ -1,5 +1,5 @@
 import {
-  PG_BOSS_QUEUE_CACHE_SECONDS,
+  PG_BOSS_BACKGROUND_TIMER_SECONDS,
   QUEUE_CONFIG,
   QUEUES,
   type DeletionReminderJob,
@@ -36,7 +36,8 @@ async function main() {
     max: 6,
     supervise: false,
     schedule: false,
-    queueCacheIntervalSeconds: PG_BOSS_QUEUE_CACHE_SECONDS,
+    queueCacheIntervalSeconds: PG_BOSS_BACKGROUND_TIMER_SECONDS,
+    bamIntervalSeconds: PG_BOSS_BACKGROUND_TIMER_SECONDS,
   });
   boss.on('error', (err) => console.error('[pg-boss]', err));
   await boss.start();
