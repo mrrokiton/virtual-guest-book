@@ -15,8 +15,10 @@ import {
   generateSlug,
   generateToken,
   MAX_UPLOAD_DAYS,
+  MIN_UPLOAD_DAYS,
   MUSIC_MODULE_KEY,
   mediaPurgeRequest,
+  planLimits,
   QUEUE_CONFIG,
   QUEUES,
   requestDeletion,
@@ -46,7 +48,7 @@ import { z } from 'zod';
 import type { ActionState } from '@/lib/action-state';
 import { warsawMidnight } from '@/lib/dates';
 import { env } from '@/lib/env';
-import { enqueue } from '@/lib/jobs';
+import { enqueue, wakeWorker } from '@/lib/jobs';
 import { checkWeddingAccess, requireUser, type WeddingAccess } from '@/lib/session';
 import { db, mailer } from '@/lib/server';
 
@@ -70,6 +72,7 @@ async function withAccess(
 }
 
 const MAX_EVENT_DAYS_AHEAD = 3 * 365;
+const UPLOAD_DAYS_MESSAGE = `Podaj od ${MIN_UPLOAD_DAYS} do ${MAX_UPLOAD_DAYS} dni po weselu.`;
 
 const weddingFields = z.object({
   name: z.string().trim().min(1, 'Podaj nazwę wesela.').max(120),
@@ -81,7 +84,12 @@ const weddingFields = z.object({
     }
     return d as Date;
   }),
-  uploadDays: z.coerce.number().int().min(1).max(MAX_UPLOAD_DAYS).default(DEFAULT_UPLOAD_DAYS),
+  uploadDays: z.coerce
+    .number()
+    .int(UPLOAD_DAYS_MESSAGE)
+    .min(MIN_UPLOAD_DAYS, UPLOAD_DAYS_MESSAGE)
+    .max(MAX_UPLOAD_DAYS, UPLOAD_DAYS_MESSAGE)
+    .default(DEFAULT_UPLOAD_DAYS),
 });
 
 function firstIssue(error: z.ZodError): ActionState {
@@ -128,11 +136,24 @@ export async function updateWeddingAction(_: ActionState, form: FormData): Promi
           .regex(/^#[0-9a-fA-F]{6}$/)
           .optional()
           .or(z.literal('')),
+        // A wedding created under the old 30-day limit keeps its value until the couple changes it.
+        uploadDays: z.coerce
+          .number()
+          .int(UPLOAD_DAYS_MESSAGE)
+          .min(MIN_UPLOAD_DAYS, UPLOAD_DAYS_MESSAGE)
+          .default(DEFAULT_UPLOAD_DAYS),
       })
       .safeParse(Object.fromEntries(form));
     if (!parsed.success) return firstIssue(parsed.error);
     const { name, eventDate, uploadDays, headline, accent } = parsed.data;
-    const schedule = computeSchedule(eventDate, uploadDays, wedding.plan);
+    const scheduleUnchanged =
+      eventDate.getTime() === wedding.eventDate.getTime() && uploadDays === wedding.uploadDays;
+    const schedule = scheduleUnchanged
+      ? {
+          readOnlyAt: wedding.readOnlyAt,
+          archiveAt: addDays(wedding.readOnlyAt, planLimits(wedding.plan).galleryDays),
+        }
+      : computeSchedule(eventDate, uploadDays, wedding.plan);
 
     const now = new Date();
     if (wedding.status !== 'draft' && schedule.archiveAt <= now) {
@@ -160,6 +181,7 @@ export async function updateWeddingAction(_: ActionState, form: FormData): Promi
       actorId: user.id,
       action: 'wedding.updated',
     });
+    if (!scheduleUnchanged) void wakeWorker();
   });
 }
 
@@ -174,6 +196,7 @@ export async function activateWeddingAction(_: ActionState, form: FormData): Pro
       actorId: user.id,
       action: 'wedding.activated',
     });
+    void wakeWorker();
     return { ok: 'Wesele jest aktywne. Goście mogą już dodawać zdjęcia.' };
   });
 }
@@ -375,6 +398,7 @@ export async function restoreWeddingAction(_: ActionState, form: FormData): Prom
       actorId: user.id,
       action: 'wedding.restored',
     });
+    void wakeWorker();
     return { ok: 'Usunięcie zostało anulowane.' };
   });
 }

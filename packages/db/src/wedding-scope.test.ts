@@ -27,10 +27,10 @@ async function makeWedding(name: string) {
     slug: generateSlug(),
     name,
     eventDate,
-    uploadDays: 7,
+    uploadDays: 3,
     plan: 'standard',
     pinCiphertext: 'x',
-    ...computeSchedule(eventDate, 7, 'standard'),
+    ...computeSchedule(eventDate, 3, 'standard'),
   });
   return { owner, wedding };
 }

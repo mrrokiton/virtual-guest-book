@@ -10,6 +10,13 @@ export const QUEUES = {
 
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 
+/**
+ * pg-boss refreshes its in-process queue list on this timer even with supervision and scheduling
+ * off. Queue definitions only change on deploy, and each refresh is a query that keeps Neon awake,
+ * so both apps use the maximum pg-boss allows (24 h).
+ */
+export const PG_BOSS_QUEUE_CACHE_SECONDS = 24 * 3600;
+
 export interface QueueConfig {
   retryLimit: number;
   retryDelay?: number;

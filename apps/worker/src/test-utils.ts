@@ -113,10 +113,10 @@ export async function makeWedding(
     slug: generateSlug(),
     name: 'Ania i Tomek',
     eventDate: opts.eventDate,
-    uploadDays: 7,
+    uploadDays: 3,
     plan,
     pinCiphertext: 'x',
-    ...computeSchedule(opts.eventDate, 7, plan),
+    ...computeSchedule(opts.eventDate, 3, plan),
   });
   return { owner, wedding };
 }

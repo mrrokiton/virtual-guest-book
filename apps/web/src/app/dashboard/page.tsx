@@ -1,4 +1,4 @@
-import { DEFAULT_UPLOAD_DAYS, MAX_UPLOAD_DAYS } from '@vgb/core';
+import { DEFAULT_UPLOAD_DAYS, MAX_UPLOAD_DAYS, MIN_UPLOAD_DAYS } from '@vgb/core';
 import { listWeddingsForUser } from '@vgb/db';
 import Link from 'next/link';
 import { ActionForm, SubmitButton } from '@/components/action-form';
@@ -68,13 +68,13 @@ export default async function DashboardPage() {
           <Field
             label="Ile dni po weselu goście mogą dodawać zdjęcia"
             htmlFor="uploadDays"
-            hint={`Od 1 do ${MAX_UPLOAD_DAYS} dni.`}
+            hint={`Od ${MIN_UPLOAD_DAYS} do ${MAX_UPLOAD_DAYS} dni. ${MIN_UPLOAD_DAYS} oznacza tylko dzień wesela.`}
           >
             <Input
               id="uploadDays"
               name="uploadDays"
               type="number"
-              min={1}
+              min={MIN_UPLOAD_DAYS}
               max={MAX_UPLOAD_DAYS}
               defaultValue={DEFAULT_UPLOAD_DAYS}
               required

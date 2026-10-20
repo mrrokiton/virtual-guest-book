@@ -8,16 +8,27 @@ Dla osoby, która w sobotę o 22:00 dostaje telefon „goście nie mogą dodać 
 `vgb-web` (Next.js na Fly.io, region `fra`) obsługuje gości, panel i API. Pliki trafiają z telefonu
 prosto do Cloudflare R2 (podpisany PUT), filmy do Cloudflare Stream. `vgb-worker` (pg-boss) robi
 miniatury, ZIP-y, cykl życia wesel i twarde usuwanie. Wspólny Postgres (Neon, Frankfurt) trzyma dane
-i kolejkę zadań. Galeria odświeża się przez SSE zasilane `LISTEN/NOTIFY`; gdy SSE nie działa,
-przeglądarka sama przechodzi na odpytywanie co 10 s.
+i kolejkę zadań. W oknie wesela (od dnia przed weselem do końca dodawania zdjęć, najwyżej 3 dni po)
+galeria odświeża się przez SSE zasilane `LISTEN/NOTIFY`; gdy SSE nie działa, przeglądarka sama
+przechodzi na odpytywanie co 30 s. Poza oknem galeria odświeża się co 10 minut, a ukryta karta nie
+wysyła żadnych zapytań.
+
+**Tryb uśpienia.** Neon płaci za czas działania bazy, nie za zapytania, i usypia ją po 5 minutach
+bez zapytań. Dlatego poza oknami wesel worker przestaje odpytywać kolejkę i budzi się raz na
+godzinę (cykl życia). Web budzi go od razu przez `POST http://vgb-worker.internal:8081/wake`, gdy
+gość coś wyśle, para aktywuje lub przywróci wesele, zmieni datę albo superadmin odblokuje wesele.
+Wymaga sekretu `WORKER_WAKE_TOKEN` w obu aplikacjach; bez niego worker działa bez przerwy jak
+dawniej. `/api/health` (sprawdzenie Fly co 15 s) nie dotyka bazy.
 
 ## Szybka diagnoza
 
 | Sprawdź               | Jak                                                                                                             |
 | --------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Czy web żyje          | `curl https://<domena>/api/health` → `{"ok":true}`; `fly status -a vgb-web`                                     |
+| Czy baza odpowiada    | `curl https://<domena>/api/health/db` → `{"ok":true}` (budzi Neon, nie podpinaj pod częsty monitoring)          |
 | Logi web              | `fly logs -a vgb-web`                                                                                           |
 | Czy worker przetwarza | `fly logs -a vgb-worker` → linie `[job] photo … ok in …ms`                                                      |
+| Czy worker śpi        | `fly logs -a vgb-worker` → `[worker] asleep until …` / `[worker] awake (…)`                                     |
 | Kolejka zadań         | SQL poniżej                                                                                                     |
 | Błędy aplikacji       | Sentry (projekt web i worker)                                                                                   |
 | Status dostawców      | [Fly](https://status.flyio.net), [Cloudflare](https://www.cloudflarestatus.com), [Neon](https://neonstatus.com) |
@@ -50,6 +61,9 @@ select status, count(*) from media where wedding_id = '<id>' group by 1;
 - „Galeria osiągnęła limit plików”: limit planu. Na teraz: zmiana planu wesela w SQL
   (`update weddings set plan = 'premium' where id = '<id>';`).
 - Upload przechodzi, ale zdjęcie nie pojawia się w galerii: worker. Sprawdź `fly logs -a vgb-worker`.
+  Jeśli po wysłaniu nie ma linii `[worker] awake (request)`, web nie budzi workera: sprawdź, czy
+  `WORKER_WAKE_TOKEN` jest taki sam w obu aplikacjach (`fly secrets list`) i czy w logach web nie ma
+  `[worker-wake]`. Śpiący worker i tak podejmie zadania w ciągu godziny.
   Jeśli maszyna nie działa: `fly machine start -a vgb-worker`. Zadania nie giną: pg-boss podejmie je
   po restarcie. Pliki `uploading` starsze niż 24 h (gość nie dokończył wysyłki) są oznaczane jako
   nieudane i sprzątane. Pliki `processing` starsze niż godzina są ponawiane co przebieg cyklu życia:
@@ -57,7 +71,10 @@ select status, count(*) from media where wedding_id = '<id>' group by 1;
 
 ### Galeria nie odświeża się na żywo
 
-Bez paniki: klient po 3 nieudanych połączeniach SSE przechodzi na odpytywanie co 10 s (w nagłówku
+Poza oknem wesela to normalne: galeria odświeża się co 10 minut, przy powrocie do karty i chwilę
+po własnym uploadzie gościa. Okno zaczyna się o północy (czas polski) dzień przed weselem.
+
+W oknie: klient po 3 nieudanych połączeniach SSE przechodzi na odpytywanie co 30 s (w nagłówku
 pojawia się „Tryb oszczędny”). Jeśli dotyczy wszystkich: zrestartuj web (`fly apps restart vgb-web`).
 Hub SSE po utracie połączenia z Postgresem łączy się ponownie i wysyła klientom `resync`.
 
@@ -70,8 +87,10 @@ API Stream i oznacza jako gotowe albo nieudane.
 
 ### Baza danych niedostępna
 
-Web zwraca `503` na `/api/health`, Fly przestaje kierować ruch. Neon: sprawdź status i limity
-połączeń. Po powrocie bazy nic nie trzeba robić ręcznie.
+Strony zwracają błąd, `/api/health/db` zwraca `503`. `/api/health` dalej odpowiada `200`, bo nie
+sprawdza bazy (inaczej Neon nigdy by nie zasnął). Neon: sprawdź status, limity połączeń i limit
+godzin obliczeniowych (plan Free: 100 CU-godzin miesięcznie na projekt). Po powrocie bazy nic nie
+trzeba robić ręcznie; zerwane bezczynne połączenia pula odtwarza sama.
 
 ## Zadania operacyjne
 
@@ -86,7 +105,10 @@ połączeń. Po powrocie bazy nic nie trzeba robić ręcznie.
 - **Przywrócenie wesela** w okresie karencji (14 dni): para klika „Anuluj usunięcie” w panelu. Po
   terminie `purge_at` danych nie da się odzyskać.
 - **Ręczne uruchomienie cyklu życia:** restart workera (`fly apps restart vgb-worker`); przy starcie
-  wysyła tick, potem co 10 minut.
+  wysyła tick, potem co 10 minut, gdy nie śpi, a co godzinę w trybie uśpienia.
+- **Termin dodawania zdjęć:** `uploadDays` to pełne dni po weselu (0–3, domyślnie 3); dodawanie
+  kończy się o północy czasu polskiego po ostatnim dniu. Wesela utworzone wcześniej z dłuższym
+  terminem go zachowują, ale pełna aktywność (SSE, czuwający worker) kończy się 3 dni po weselu.
 
 ## Wdrożenie
 
@@ -134,6 +156,24 @@ wymaga wdrożenia w dwóch krokach.
    # worker: te same sekrety
    fly certs add <domena> -a vgb-web
    ```
+   Tryb uśpienia: ten sam losowy token w obu aplikacjach (min. 32 znaki). Bash:
+   ```sh
+   TOKEN=$(openssl rand -hex 32)
+   fly secrets set -a vgb-worker --stage WORKER_WAKE_TOKEN=$TOKEN
+   fly secrets set -a vgb-web --stage WORKER_WAKE_TOKEN=$TOKEN
+   ```
+   PowerShell (Windows zwykle nie ma `openssl`):
+   ```powershell
+   $bytes = New-Object byte[] 32
+   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+   $TOKEN = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+   fly secrets set -a vgb-worker --stage "WORKER_WAKE_TOKEN=$TOKEN"
+   fly secrets set -a vgb-web --stage "WORKER_WAKE_TOKEN=$TOKEN"
+   ```
+   `fly secrets list` w obu aplikacjach powinien pokazać ten sam digest `WORKER_WAKE_TOKEN`.
+   `--stage` zapisuje sekret bez restartu; wchodzi w życie przy najbliższym wdrożeniu (najpierw
+   worker, potem web). Sam token na workerze bez tokenu na web oznacza, że worker śpi, a web go nie
+   budzi: zdjęcia pojawiają się wtedy z opóźnieniem do godziny.
    `PIN_ENCRYPTION_KEY` musi być identyczny w web i worker i **nie może się zmienić**: bez niego PIN-y
    istniejących wesel są nie do odczytania.
 7. **Test obciążeniowy na stagingu:** `k6 run -e BASE_URL=... -e WEDDINGS="slug:PIN,..." load/k6-wedding.js`
@@ -144,6 +184,8 @@ wymaga wdrożenia w dwóch krokach.
 - Limit rozmiaru uploadu do R2 jest sprawdzany po wysłaniu (R2 nie obsługuje polityk POST z
   `content-length-range`): za duże pliki są kasowane przy potwierdzeniu, porzucone po 24 h.
 - Limit strumieni SSE (300 na wesele, 4 na sesję gościa) jest liczony w pamięci każdej maszyny web.
-  Goście ponad limit przechodzą na odpytywanie co 10 s.
+  Goście ponad limit przechodzą na odpytywanie co 30 s.
+- Śpiący worker zauważa wysłane zadanie dopiero po sygnale `/wake` z web albo przy godzinnym
+  przebudzeniu. Zadania odroczone (`startAfter`, np. ponowienia) nie budzą go same.
 - `pnpm audit`: jedno znalezisko średniej wagi w `esbuild` (zależność `drizzle-kit`), dotyczy tylko
   serwera deweloperskiego esbuild, nieużywanego w produkcji.

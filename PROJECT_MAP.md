@@ -97,12 +97,13 @@ Apps must not import `drizzle-orm` directly. ESLint enforces that in `apps/**` s
 | Couple browser    | `apps/web`                  | Better Auth session cookie, server actions under `/dashboard`                          |
 | `apps/web`        | Postgres                    | Drizzle pool max 10 in `apps/web/src/lib/server.ts`. Separate `pg.Client` for `LISTEN` |
 | `apps/web`        | pg-boss                     | Producer only (`apps/web/src/lib/jobs.ts`)                                             |
+| `apps/web`        | `apps/worker`               | `POST WORKER_WAKE_URL` (Bearer `WORKER_WAKE_TOKEN`) wakes a sleeping worker            |
 | `apps/worker`     | Postgres                    | Drizzle pool max 8 in `apps/worker/src/context.ts`, plus pg-boss (`max: 6`)            |
 | `apps/worker`     | R2 / MinIO                  | Read originals, write variants and ZIPs, delete prefixes                               |
 | `apps/worker`     | Stream, Resend or SMTP      | Video state, MP4 for ZIP, outbound mail                                                |
 | Cloudflare Stream | `POST /api/webhooks/stream` | Signed webhook. Route returns 404 unless provider is `cloudflare`                      |
 
-Production shape in `docs/runbook.md` and `fly.toml`: Fly `vgb-web` (512 MB, min 1 machine, connection concurrency soft 800) and `vgb-worker` (1 GB). Worker deploy runs migrations (`release_command`) and must go out before web. Postgres is expected to be a direct Neon connection in Frankfurt: transaction-mode poolers break `LISTEN/NOTIFY` and pg-boss. The repo does not contain live credentials or a checked-in production deploy.
+Production shape in `docs/runbook.md` and `fly.toml`: Fly `vgb-web` (512 MB, min 1 machine, connection concurrency soft 800) and `vgb-worker` (1 GB). Worker deploy runs migrations (`release_command`) and must go out before web. Web reaches the worker's wake server at `http://vgb-worker.internal:8081/wake` over Fly's private network (no public service). Fly's health check hits `/api/health`, which does not touch Postgres, so Neon can scale to zero. Postgres is expected to be a direct Neon connection in Frankfurt: transaction-mode poolers break `LISTEN/NOTIFY` and pg-boss. The repo does not contain live credentials or a checked-in production deploy.
 
 Local substitutes: Postgres and MinIO from `docker-compose.yml`, `VIDEO_PROVIDER=local`, Mailpit on `http://localhost:8025`.
 
@@ -126,7 +127,7 @@ Local substitutes: Postgres and MinIO from `docker-compose.yml`, `VIDEO_PROVIDER
 4. Photos move to `processing` and enqueue `photo-process`. The worker sniffs magic bytes (`detectMedia`), converts HEIC, strips EXIF, writes variants `thumb` (400 webp), `large` (1600 webp), and `full` (4096 jpeg), then publishes `media.ready`.
 5. Cloudflare videos stay `processing` until the webhook calls `markVideoReady`. Local videos become `ready` in `/complete` after a 64-byte sniff, then `publishMediaEvent`.
 6. Gallery: `GET /api/w/[slug]/media` calls `media.gallery` (status `ready` only) and returns cursor pages (`limit` default 30, max 60). Wedding members use the same ready-only feed. The dashboard media page uses `media.adminList` (everything except `deleted` and `uploading`). File bytes are never proxied. `GET .../file` defaults to `v=large`. `v=thumb|large|full` redirects to a 10-minute signed URL. `dl=1` is valid only with `v=full` on a photo: the signed response sets `Content-Disposition: attachment` and `Content-Type: application/octet-stream`, filename `zdjecie-{mediaId}.jpg` (the `full` JPEG; the original is deleted after processing). Any other `dl=1` is 404. Gallery `<img>` requests omit `dl`. `?v=play` returns JSON `{ type: 'iframe' | 'file', url }`. Stream playback tokens last 1 hour (`TOKEN_TTL_SECONDS` in `packages/services/src/video.ts`).
-7. Live updates: `GET /api/w/[slug]/events` (SSE). `RealtimeHub` holds one `LISTEN vgb_media` per web process. Events are `media.ready`, `media.removed`, `music.changed`, and `resync`. The gallery merges media rows (`use-live-gallery.ts`). The music page refetches `GET /music` on `music.changed` (`use-live-music.ts`). After 3 EventSource failures the client polls every 10 s. Postgres reconnect sends `resync`. A page keeps one stream.
+7. Live updates: `GET /api/w/[slug]/events` (SSE). `RealtimeHub` holds one `LISTEN vgb_media` per web process. Events are `media.ready`, `media.removed`, `music.changed`, and `resync`. The gallery merges media rows (`use-live-gallery.ts`). The music page refetches `GET /music` on `music.changed` (`use-live-music.ts`). Both use `use-live-updates.ts`, scheduled by `live-schedule.ts`. The guest page passes `liveWindowOf(wedding)` (`apps/web/src/lib/guest.ts`, from `fullActivityWindow`; null unless `active` and not blocked). Inside the window the page opens SSE; after 3 EventSource failures it polls every 30 s. Outside the window there is no SSE: it refreshes every 10 minutes, and 10 s and 30 s after the guest's own upload. A hidden tab closes the stream and stops polling; becoming visible reconnects and refreshes. A timer switches modes at the window edges. Postgres reconnect sends `resync`. A page keeps one stream.
 
 ### Music suggestions
 
@@ -140,7 +141,9 @@ Fair queue off: open rows follow `created_at`. Fair queue on: the first 3 open r
 
 ### Lifecycle
 
-`lifecycle-tick` is a pg-boss singleton, cron `*/10 * * * *`, also sent once at worker start.
+`lifecycle-tick` is a pg-boss singleton. There is no pg-boss cron (`schedule: false`; the old schedule is removed at start). `WorkerRuntime` (`apps/worker/src/runtime.ts`) sends it on every wake and every 10 minutes while awake, together with `boss.supervise()` (`supervise: false` in the constructor).
+
+**Worker sleep mode.** Enabled only when `WORKER_WAKE_TOKEN` is set. Every minute while awake, `decideMode` (`apps/worker/src/activity.ts`) checks `listOpenUploadWindows` and the queue counts. The worker stays awake while any wedding is inside `fullActivityWindow`, jobs are ready or active, or a wake request arrived in the last 15 minutes. Otherwise it calls `offWork` on every queue and sleeps until the next hour or the earliest window start, whichever is sooner. `fullActivityWindow` (`@vgb/core`) runs from Warsaw midnight the day before `event_date` to `min(readOnlyAt, Warsaw midnight after event_date + 3 days)`. Web calls `wakeWorker()` after `enqueue` (unless `startAfter` is in the future) and after activate, restore, unblock, or a schedule change; throttled to once a minute per process. pg-boss `queueCacheIntervalSeconds` is 24 h in both apps (`PG_BOSS_QUEUE_CACHE_SECONDS`) because its default 60 s timer queries Postgres even with supervise and schedule off. `createPool` logs idle-connection errors instead of crashing when Neon suspends.
 
 `dueTransition` in `packages/core/src/wedding.ts`:
 
@@ -210,7 +213,8 @@ These require a Better Auth session plus a wedding role, except health and the S
 
 | Method and path                       | Auth                     | Behavior                                                                                                                 |
 | ------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/health`                     | None                     | `{ ok: true }` or 503 `{ ok: false }` after `pingDatabase`                                                               |
+| `GET /api/health`                     | None                     | `{ ok: true }`. Liveness only, no database query                                                                         |
+| `GET /api/health/db`                  | None                     | `{ ok: true }` or 503 `{ ok: false }` after `pingDatabase`. Manual diagnosis; wakes Neon                                 |
 | `GET /api/admin/weddings/[id]/qr`     | `wedding.view`           | PNG attachment of the guest URL                                                                                          |
 | `GET /api/admin/weddings/[id]/export` | `export.download`        | 302 to a 15-minute ZIP URL, or 404 if the latest export is not `ready`                                                   |
 | `POST /api/webhooks/stream`           | `webhook-signature` HMAC | 404 if video provider is not Cloudflare. 401 bad signature. 400 bad JSON. 202 ignored or already deleted. Otherwise `OK` |
@@ -276,7 +280,7 @@ Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migratio
 
 `status_before_deletion` stores the status to restore. `blocked_at` closes the guest view without changing `status`. `approved_at` is required before activation.
 
-Schedule: uploads stay open for `uploadDays` (1–30, default 7) after `event_date`. Then the gallery stays readable for plan `galleryDays`, then archived for `archiveDays`.
+Schedule: `uploadDays` is full days after `event_date` (0–3, default 3). `readOnlyAt` is Warsaw midnight after day `event_date + uploadDays`, so 0 means the wedding day only. Then the gallery stays readable for plan `galleryDays`, then archived for `archiveDays`. Older rows may hold larger `uploadDays`; editing keeps their `readOnlyAt` unless the date or `uploadDays` changes. Calendar helpers are in `packages/core/src/dates.ts`.
 
 ### Media status
 
@@ -310,7 +314,7 @@ Defined once in `packages/core/src/jobs.ts` (`QUEUE_CONFIG`).
 | `wedding-export`    | Stream a ZIP to the bucket, 3 hour expire                |
 | `wedding-purge`     | Delete the wedding prefix and row, singleton per wedding |
 | `deletion-reminder` | Email if `purgeAt` is unchanged                          |
-| `lifecycle-tick`    | Singleton cron every 10 minutes                          |
+| `lifecycle-tick`    | Singleton. Sent by the worker runtime, not cron          |
 | `send-email`        | `mailer.send`                                            |
 
 `EXPORT_SUPERSEDED` (`"superseded"`) marks an export the owner replaced. A late job must not revive it.
@@ -328,6 +332,8 @@ Defined once in `packages/core/src/jobs.ts` (`QUEUE_CONFIG`).
 | `apps/web/src/lib/realtime.ts`    | db, `pg`                 | SSE hub                                                                                      |
 | `apps/web/src/components/guest/*` | web lib types            | Upload queue, gallery merge, live gallery, live music list, section nav                      |
 | `apps/worker/src/index.ts`        | pg-boss, jobs            | Queue workers and graceful shutdown (60 s)                                                   |
+| `apps/worker/src/runtime.ts`      | pg-boss, `activity.ts`   | Awake/asleep switching, lifecycle and supervise timers                                       |
+| `apps/worker/src/wake-server.ts`  | Node `http`              | `POST /wake` with Bearer token on `WORKER_WAKE_PORT` (default 8081)                          |
 
 Email templates in `emails`: `verifyEmail`, `resetPassword`, `magicLink`, `invite`, `exportReady`, `deletionScheduled`, `deletionReminder`.
 
@@ -383,7 +389,9 @@ CI on push and pull request to `main`: format check, lint, typecheck, test, buil
 Implemented behavior with a known gap:
 
 - R2 upload size is checked after the PUT. Oversized objects are deleted at `/complete`. Abandoned `uploading` rows are failed after 24 hours.
-- SSE caps are per machine, not global. Extra guests fall back to 10-second polling.
+- SSE caps are per machine, not global. Extra guests fall back to 30-second polling.
+- A sleeping worker sees new jobs only through `/wake` or its hourly tick. Jobs sent with a future `startAfter` (retries, the deletion reminder) wait for that tick. A worker with the token and a web without it sleeps and is never woken.
+- The web machine stays on (`min_machines_running = 1`), so Fly cost is unchanged; only Neon compute drops.
 - Better Auth's own in-memory limiter is replaced by Postgres storage, but the comment in `tasks/todo.md` still records the original in-memory concern as accepted before that change. The code path is `customStorage` in `apps/web/src/lib/auth.ts`.
 - `pnpm audit` finding called out in `docs/runbook.md`: moderate `esbuild` via `drizzle-kit`, dev-only.
 - HEIC is implemented (`heic-convert`) but `tasks/todo.md` says there is no iPhone fixture, so HEIC was not verified end to end.

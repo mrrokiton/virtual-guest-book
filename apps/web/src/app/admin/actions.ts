@@ -4,6 +4,7 @@ import { isPlatformAdmin, updateWedding, weddingScope } from '@vgb/db';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import type { ActionState } from '@/lib/action-state';
+import { wakeWorker } from '@/lib/jobs';
 import { getUser } from '@/lib/session';
 import { db } from '@/lib/server';
 
@@ -32,6 +33,7 @@ export async function setWeddingBlockedAction(
     action: block ? 'wedding.blocked' : 'wedding.unblocked',
     metadata: { reason: parsed.data.reason },
   });
+  if (!block) void wakeWorker();
   revalidatePath('/admin');
   return { ok: block ? 'Zablokowano.' : 'Odblokowano.' };
 }

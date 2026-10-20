@@ -60,7 +60,7 @@ export function GuestHeader({
         {degraded && (
           <span
             className="flex items-center gap-1 text-xs text-muted-foreground"
-            title="Odświeżanie co kilkanaście sekund"
+            title="Odświeżanie co pół minuty"
           >
             <WifiOff className="size-3.5" /> Tryb oszczędny
           </span>

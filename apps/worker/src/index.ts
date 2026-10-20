@@ -1,4 +1,5 @@
 import {
+  PG_BOSS_QUEUE_CACHE_SECONDS,
   QUEUE_CONFIG,
   QUEUES,
   type DeletionReminderJob,
@@ -8,6 +9,7 @@ import {
   type WeddingExportJob,
   type WeddingPurgeJob,
 } from '@vgb/core';
+import { listOpenUploadWindows } from '@vgb/db';
 import * as Sentry from '@sentry/node';
 import { PgBoss, type Job } from 'pg-boss';
 import { createServices, type Context } from './context';
@@ -16,6 +18,8 @@ import { lifecycleTick, sendDeletionReminder, sendEmail } from './jobs/lifecycle
 import { purgeMedia } from './jobs/media-purge';
 import { processPhoto } from './jobs/photo';
 import { purgeWedding } from './jobs/wedding-purge';
+import { WorkerRuntime, type QueueWorker } from './runtime';
+import { startWakeServer } from './wake-server';
 
 async function main() {
   const services = createServices();
@@ -25,7 +29,15 @@ async function main() {
       environment: services.cfg.NODE_ENV,
     });
   }
-  const boss = new PgBoss({ connectionString: services.cfg.DATABASE_URL, max: 6 });
+  // WorkerRuntime drives lifecycle-tick and maintenance itself, so it can stop touching Postgres
+  // while no wedding needs it. pg-boss's own timers would keep Neon awake around the clock.
+  const boss = new PgBoss({
+    connectionString: services.cfg.DATABASE_URL,
+    max: 6,
+    supervise: false,
+    schedule: false,
+    queueCacheIntervalSeconds: PG_BOSS_QUEUE_CACHE_SECONDS,
+  });
   boss.on('error', (err) => console.error('[pg-boss]', err));
   await boss.start();
 
@@ -33,6 +45,8 @@ async function main() {
     if (await boss.getQueue(name)) await boss.updateQueue(name, options);
     else await boss.createQueue(name, { ...options, policy });
   }
+  // Replaced by the runtime timer; a leftover cron row would fire again if scheduling came back.
+  await boss.unschedule(QUEUES.lifecycleTick);
 
   const ctx: Context = { ...services, boss };
 
@@ -51,41 +65,70 @@ async function main() {
       }
     };
 
-  await boss.work<PhotoProcessJob>(
-    QUEUES.photoProcess,
-    { localConcurrency: 2 },
-    handle('photo', processPhoto),
-  );
-  await boss.work<MediaPurgeJob>(
-    QUEUES.mediaPurge,
-    { localConcurrency: 4 },
-    handle('media-purge', purgeMedia),
-  );
-  await boss.work<WeddingExportJob>(QUEUES.weddingExport, handle('export', exportWedding));
-  await boss.work<WeddingPurgeJob>(QUEUES.weddingPurge, handle('wedding-purge', purgeWedding));
-  await boss.work<DeletionReminderJob>(
-    QUEUES.deletionReminder,
-    handle('reminder', sendDeletionReminder),
-  );
-  await boss.work<SendEmailJob>(
-    QUEUES.sendEmail,
-    { localConcurrency: 2 },
-    handle('email', sendEmail),
-  );
-  await boss.work(
-    QUEUES.lifecycleTick,
-    handle('lifecycle', (c) => lifecycleTick(c)),
-  );
-  await boss.schedule(QUEUES.lifecycleTick, '*/10 * * * *');
-  await boss.send(QUEUES.lifecycleTick, {});
+  const workers: QueueWorker[] = [
+    {
+      name: QUEUES.photoProcess,
+      options: { localConcurrency: 2 },
+      handler: handle<PhotoProcessJob>('photo', processPhoto),
+    },
+    {
+      name: QUEUES.mediaPurge,
+      options: { localConcurrency: 4 },
+      handler: handle<MediaPurgeJob>('media-purge', purgeMedia),
+    },
+    {
+      name: QUEUES.weddingExport,
+      options: {},
+      handler: handle<WeddingExportJob>('export', exportWedding),
+    },
+    {
+      name: QUEUES.weddingPurge,
+      options: {},
+      handler: handle<WeddingPurgeJob>('wedding-purge', purgeWedding),
+    },
+    {
+      name: QUEUES.deletionReminder,
+      options: {},
+      handler: handle<DeletionReminderJob>('reminder', sendDeletionReminder),
+    },
+    {
+      name: QUEUES.sendEmail,
+      options: { localConcurrency: 2 },
+      handler: handle<SendEmailJob>('email', sendEmail),
+    },
+    {
+      name: QUEUES.lifecycleTick,
+      options: {},
+      handler: handle('lifecycle', (c) => lifecycleTick(c)),
+    },
+  ];
 
-  console.info('[worker] started');
+  const token = services.cfg.WORKER_WAKE_TOKEN;
+  const runtime = new WorkerRuntime({
+    boss,
+    listWindows: (now) => listOpenUploadWindows(services.db, now),
+    workers,
+    sleepEnabled: Boolean(token),
+    now: services.now,
+  });
+  await runtime.start();
+  const wakeServer = token
+    ? await startWakeServer({
+        port: services.cfg.WORKER_WAKE_PORT,
+        token,
+        onWake: () => void runtime.wake('request'),
+      })
+    : null;
+
+  console.info('[worker] started (sleep mode %s)', token ? 'on' : 'off');
 
   let stopping = false;
   const shutdown = async (signal: string) => {
     if (stopping) return;
     stopping = true;
     console.info('[worker] %s received, finishing active jobs', signal);
+    wakeServer?.close();
+    await runtime.stop();
     await boss.stop({ graceful: true, timeout: 60_000 });
     await Sentry.flush(2000);
     process.exit(0);

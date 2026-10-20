@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
 import { GuestShell, headlineOf, openGuest } from '@/components/guest/guest-access';
 import { MusicView } from '@/components/guest/music-view';
-import { findWedding } from '@/lib/guest';
+import { findWedding, liveWindowOf } from '@/lib/guest';
 import { loadMusicPanel } from '@/lib/music';
 
 export const dynamic = 'force-dynamic';
@@ -31,7 +31,12 @@ export default async function GuestMusicPage({ params }: Props) {
 
   return (
     <GuestShell wedding={opened.wedding}>
-      <MusicView slug={slug} headline={opened.headline} initial={music} />
+      <MusicView
+        slug={slug}
+        headline={opened.headline}
+        liveWindow={liveWindowOf(opened.wedding)}
+        initial={music}
+      />
     </GuestShell>
   );
 }

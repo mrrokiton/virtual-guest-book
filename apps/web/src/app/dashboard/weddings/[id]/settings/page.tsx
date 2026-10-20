@@ -1,4 +1,10 @@
-import { adminCanEdit, MAX_UPLOAD_DAYS, MUSIC_MODULE_KEY, roleCan } from '@vgb/core';
+import {
+  adminCanEdit,
+  MAX_UPLOAD_DAYS,
+  MIN_UPLOAD_DAYS,
+  MUSIC_MODULE_KEY,
+  roleCan,
+} from '@vgb/core';
 import { weddingScope } from '@vgb/db';
 import { ActionForm, SubmitButton } from '@/components/action-form';
 import { Alert, Card, CardDescription, CardTitle } from '@/components/ui/card';
@@ -46,13 +52,17 @@ export default async function WeddingSettingsPage({ params }: { params: Promise<
                 required
               />
             </Field>
-            <Field label="Dni na dodawanie zdjęć po weselu" htmlFor="uploadDays">
+            <Field
+              label="Dni na dodawanie zdjęć po weselu"
+              htmlFor="uploadDays"
+              hint={`Od ${MIN_UPLOAD_DAYS} do ${MAX_UPLOAD_DAYS} dni. ${MIN_UPLOAD_DAYS} oznacza tylko dzień wesela.`}
+            >
               <Input
                 id="uploadDays"
                 name="uploadDays"
                 type="number"
-                min={1}
-                max={MAX_UPLOAD_DAYS}
+                min={MIN_UPLOAD_DAYS}
+                max={Math.max(MAX_UPLOAD_DAYS, wedding.uploadDays)}
                 defaultValue={wedding.uploadDays}
                 required
               />

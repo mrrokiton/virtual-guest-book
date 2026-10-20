@@ -3,28 +3,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GalleryItem } from '@/lib/weddings';
 import { applyNewestPage, mergeItems } from './gallery-merge';
-
-const POLL_MS = 10_000;
-const SSE_RETRY_MS = 60_000;
-/** Consecutive EventSource failures before switching to polling (some venue proxies kill SSE). */
-const SSE_MAX_FAILURES = 3;
+import { OWN_UPLOAD_REFRESH_MS, type LiveWindow } from './live-schedule';
+import { useLiveUpdates } from './use-live-updates';
 
 interface Page {
   items: GalleryItem[];
   nextCursor: string | null;
 }
 
-export type LiveMode = 'connecting' | 'live' | 'polling';
-
 export function useLiveGallery(
   slug: string,
+  liveWindow: LiveWindow,
   initialItems: GalleryItem[],
   initialCursor: string | null,
 ) {
   const [items, setItems] = useState(initialItems);
   const [cursor, setCursor] = useState(initialCursor);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [mode, setMode] = useState<LiveMode>('connecting');
   const [sessionLost, setSessionLost] = useState(false);
   const removed = useRef(new Set<string>());
 
@@ -69,69 +64,41 @@ export function useLiveGallery(
     setItems((prev) => prev.filter((i) => i.id !== id));
   }, []);
 
+  const mode = useLiveUpdates(slug, liveWindow, () => void refreshNewest(), {
+    'media.ready': (data) => {
+      const { item } = JSON.parse(data) as { item: GalleryItem };
+      if (removed.current.has(item.id)) return;
+      setItems((prev) => mergeItems(prev, [item]));
+    },
+    'media.removed': (data) => {
+      const { id } = JSON.parse(data) as { id: string };
+      removed.current.add(id);
+      setItems((prev) => prev.filter((i) => i.id !== id));
+    },
+    resync: () => void refreshNewest(),
+  });
+
+  const modeRef = useRef(mode);
+  const ownUploadTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
-    let source: EventSource | null = null;
-    let failures = 0;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let disposed = false;
+    modeRef.current = mode;
+  }, [mode]);
+  useEffect(() => {
+    const timers = ownUploadTimers.current;
+    return () => timers.forEach(clearTimeout);
+  }, []);
 
-    const stopPolling = () => {
-      if (pollTimer) clearInterval(pollTimer);
-      pollTimer = null;
-    };
-
-    const startPolling = () => {
-      setMode('polling');
-      if (!pollTimer) pollTimer = setInterval(() => void refreshNewest(), POLL_MS);
-      retryTimer = setTimeout(connect, SSE_RETRY_MS);
-    };
-
-    function connect() {
-      if (disposed) return;
-      source = new EventSource(`/api/w/${slug}/events`);
-      source.onopen = () => {
-        const wasDegraded = failures > 0 || pollTimer !== null;
-        failures = 0;
-        stopPolling();
-        setMode('live');
-        if (wasDegraded) void refreshNewest();
-      };
-      source.onerror = () => {
-        failures += 1;
-        if (failures >= SSE_MAX_FAILURES) {
-          source?.close();
-          source = null;
-          startPolling();
-        }
-      };
-      source.addEventListener('media.ready', (e) => {
-        const { item } = JSON.parse((e as MessageEvent<string>).data) as { item: GalleryItem };
-        if (removed.current.has(item.id)) return;
-        setItems((prev) => mergeItems(prev, [item]));
-      });
-      source.addEventListener('media.removed', (e) => {
-        const { id } = JSON.parse((e as MessageEvent<string>).data) as { id: string };
-        removed.current.add(id);
-        setItems((prev) => prev.filter((i) => i.id !== id));
-      });
-      source.addEventListener('resync', () => void refreshNewest());
+  /** Live mode gets the item over SSE; otherwise poll a few times while it is processed. */
+  const expectOwnUpload = useCallback(() => {
+    if (modeRef.current === 'live') return;
+    for (const ms of OWN_UPLOAD_REFRESH_MS) {
+      const timer = setTimeout(() => {
+        ownUploadTimers.current.delete(timer);
+        void refreshNewest();
+      }, ms);
+      ownUploadTimers.current.add(timer);
     }
-
-    connect();
-
-    // Phones suspend background tabs; catch up as soon as the guest comes back.
-    const onVisible = () => document.visibilityState === 'visible' && void refreshNewest();
-    document.addEventListener('visibilitychange', onVisible);
-
-    return () => {
-      disposed = true;
-      source?.close();
-      stopPolling();
-      if (retryTimer) clearTimeout(retryTimer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [slug, refreshNewest]);
+  }, [refreshNewest]);
 
   return {
     items,
@@ -139,6 +106,7 @@ export function useLiveGallery(
     loadingMore,
     loadMore,
     refreshNewest,
+    expectOwnUpload,
     removeLocal,
     mode,
     sessionLost,

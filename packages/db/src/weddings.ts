@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { PlanId, WeddingLifecycle, WeddingRole, WeddingStatus } from '@vgb/core';
 import type { Database } from './client';
 import {
@@ -183,6 +183,27 @@ export function listLifecycleCandidates(db: Database, now: Date): Promise<Weddin
         and(eq(weddings.status, 'pending_deletion'), lte(weddings.purgeAt, now)),
         eq(weddings.status, 'deleted'),
       ),
+    );
+}
+
+export type UploadWindow = Pick<
+  Wedding,
+  'id' | 'status' | 'blockedAt' | 'eventDate' | 'readOnlyAt'
+>;
+
+/** Active, unblocked weddings whose uploads have not closed yet, across all tenants. */
+export function listOpenUploadWindows(db: Database, now: Date): Promise<UploadWindow[]> {
+  return db
+    .select({
+      id: weddings.id,
+      status: weddings.status,
+      blockedAt: weddings.blockedAt,
+      eventDate: weddings.eventDate,
+      readOnlyAt: weddings.readOnlyAt,
+    })
+    .from(weddings)
+    .where(
+      and(eq(weddings.status, 'active'), isNull(weddings.blockedAt), gt(weddings.readOnlyAt, now)),
     );
 }
 

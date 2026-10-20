@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { warsawMidnight } from './dates';
 import { DomainError } from './errors';
 import {
   activate,
@@ -6,8 +7,10 @@ import {
   computeSchedule,
   DELETION_GRACE_DAYS,
   dueTransition,
+  fullActivityWindow,
   guestCanUpload,
   guestCanView,
+  isFullyActive,
   requestDeletion,
   restore,
   type WeddingLifecycle,
@@ -17,7 +20,7 @@ import { PLANS } from './plans';
 const event = new Date('2026-06-20T14:00:00Z');
 
 function wedding(overrides: Partial<WeddingLifecycle> = {}): WeddingLifecycle {
-  const schedule = computeSchedule(event, 7, 'standard');
+  const schedule = computeSchedule(event, 3, 'standard');
   return {
     status: 'active',
     statusBeforeDeletion: null,
@@ -31,15 +34,109 @@ function wedding(overrides: Partial<WeddingLifecycle> = {}): WeddingLifecycle {
 }
 
 describe('computeSchedule', () => {
-  it('derives read-only and archive dates from the event and plan', () => {
-    const s = computeSchedule(event, 7, 'standard');
-    expect(s.readOnlyAt).toEqual(addDays(event, 7));
-    expect(s.archiveAt).toEqual(addDays(event, 7 + PLANS.standard.galleryDays));
+  it('closes uploads at the Polish midnight after the last upload day', () => {
+    const s = computeSchedule(event, 3, 'standard');
+    // Wedding on 20 June, three more days, closes when 24 June starts (CEST).
+    expect(s.readOnlyAt).toEqual(new Date('2026-06-23T22:00:00Z'));
+    expect(s.archiveAt).toEqual(addDays(s.readOnlyAt, PLANS.standard.galleryDays));
   });
 
-  it('rejects an upload window outside 1..30 days', () => {
-    expect(() => computeSchedule(event, 0, 'standard')).toThrow(DomainError);
-    expect(() => computeSchedule(event, 31, 'standard')).toThrow(DomainError);
+  it('allows uploads on the wedding day only when uploadDays is 0', () => {
+    expect(computeSchedule(event, 0, 'standard').readOnlyAt).toEqual(
+      new Date('2026-06-20T22:00:00Z'),
+    );
+  });
+
+  it('counts calendar days across the autumn DST change', () => {
+    const autumn = warsawMidnight('2026-10-24')!;
+    expect(computeSchedule(autumn, 3, 'standard').readOnlyAt).toEqual(
+      new Date('2026-10-27T23:00:00Z'),
+    );
+  });
+
+  it('counts calendar days across the spring DST change', () => {
+    const spring = warsawMidnight('2026-03-28')!;
+    expect(computeSchedule(spring, 3, 'standard').readOnlyAt).toEqual(
+      new Date('2026-03-31T22:00:00Z'),
+    );
+  });
+
+  it('rejects an upload window outside 0..3 days', () => {
+    expect(() => computeSchedule(event, -1, 'standard')).toThrow(DomainError);
+    expect(() => computeSchedule(event, 4, 'standard')).toThrow(DomainError);
+    expect(() => computeSchedule(event, 1.5, 'standard')).toThrow(DomainError);
+  });
+});
+
+describe('fullActivityWindow', () => {
+  const day = warsawMidnight('2026-06-20')!;
+
+  it('spans the day before the wedding through the last upload day', () => {
+    const w = { eventDate: day, ...computeSchedule(day, 3, 'standard') };
+    expect(fullActivityWindow(w)).toEqual({
+      from: new Date('2026-06-18T22:00:00Z'),
+      until: new Date('2026-06-23T22:00:00Z'),
+    });
+  });
+
+  it('ends earlier when the upload period is shorter', () => {
+    const w = { eventDate: day, ...computeSchedule(day, 1, 'standard') };
+    expect(fullActivityWindow(w).until).toEqual(new Date('2026-06-21T22:00:00Z'));
+  });
+
+  it('caps a legacy upload period at three days after the wedding', () => {
+    const w = { eventDate: day, readOnlyAt: addDays(day, 7) };
+    expect(fullActivityWindow(w).until).toEqual(new Date('2026-06-23T22:00:00Z'));
+  });
+
+  it('lasts five calendar days across the autumn DST change', () => {
+    const autumn = warsawMidnight('2026-10-24')!;
+    const w = { eventDate: autumn, ...computeSchedule(autumn, 3, 'standard') };
+    expect(fullActivityWindow(w)).toEqual({
+      from: new Date('2026-10-22T22:00:00Z'),
+      until: new Date('2026-10-27T23:00:00Z'),
+    });
+  });
+
+  it('starts at the Polish midnight across the spring DST change', () => {
+    const spring = warsawMidnight('2026-03-28')!;
+    const w = { eventDate: spring, ...computeSchedule(spring, 3, 'standard') };
+    expect(fullActivityWindow(w).from).toEqual(new Date('2026-03-26T23:00:00Z'));
+  });
+});
+
+describe('isFullyActive', () => {
+  const day = warsawMidnight('2026-06-20')!;
+  const base = {
+    status: 'active' as const,
+    blockedAt: null,
+    eventDate: day,
+    ...computeSchedule(day, 3, 'standard'),
+  };
+  const { from, until } = fullActivityWindow(base);
+
+  it('is exact at both boundaries', () => {
+    expect(isFullyActive(base, new Date(from.getTime() - 1))).toBe(false);
+    expect(isFullyActive(base, from)).toBe(true);
+    expect(isFullyActive(base, new Date(until.getTime() - 1))).toBe(true);
+    expect(isFullyActive(base, until)).toBe(false);
+  });
+
+  it('stays idle for a wedding activated long in advance', () => {
+    expect(isFullyActive(base, addDays(day, -30))).toBe(false);
+  });
+
+  it('ignores drafts, blocked and closed weddings', () => {
+    expect(isFullyActive({ ...base, status: 'draft' }, day)).toBe(false);
+    expect(isFullyActive({ ...base, status: 'read_only' }, day)).toBe(false);
+    expect(isFullyActive({ ...base, blockedAt: day }, day)).toBe(false);
+  });
+
+  it('follows a moved wedding date', () => {
+    const moved = warsawMidnight('2026-07-04')!;
+    const w = { ...base, eventDate: moved, ...computeSchedule(moved, 3, 'standard') };
+    expect(isFullyActive(w, day)).toBe(false);
+    expect(isFullyActive(w, moved)).toBe(true);
   });
 });
 
@@ -48,7 +145,7 @@ describe('dueTransition walks the full lifecycle', () => {
     let w = wedding();
     expect(dueTransition(w, addDays(event, 1))).toBeNull();
 
-    const t1 = dueTransition(w, addDays(event, 7));
+    const t1 = dueTransition(w, w.readOnlyAt);
     expect(t1?.to).toBe('read_only');
     w = { ...w, status: 'read_only' };
 

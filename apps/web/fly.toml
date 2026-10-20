@@ -10,6 +10,9 @@ primary_region = "fra"
   S3_REGION = "auto"
   # Path-style keeps presigned URLs on the S3_ENDPOINT origin that the CSP allows.
   S3_FORCE_PATH_STYLE = "true"
+  # Wakes a sleeping worker over Fly's private network. Needs the WORKER_WAKE_TOKEN secret here
+  # and on vgb-worker; without it the worker never sleeps.
+  WORKER_WAKE_URL = "http://vgb-worker.internal:8081/wake"
 
 [http_service]
   internal_port = 3000
@@ -25,6 +28,7 @@ primary_region = "fra"
     soft_limit = 800
     hard_limit = 1000
 
+  # Liveness only. /api/health/db queries Postgres and would keep Neon awake.
   [[http_service.checks]]
     grace_period = "15s"
     interval = "15s"

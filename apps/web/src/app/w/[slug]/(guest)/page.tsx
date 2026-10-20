@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { GuestShell, headlineOf, openGuest } from '@/components/guest/guest-access';
 import { GuestApp } from '@/components/guest/guest-app';
-import { findWedding } from '@/lib/guest';
+import { findWedding, liveWindowOf } from '@/lib/guest';
 import { db, video } from '@/lib/server';
 import { toGalleryItem } from '@/lib/weddings';
 
@@ -37,6 +37,7 @@ export default async function GuestPage({ params }: Props) {
         headline={opened.headline}
         canUpload={opened.canUpload}
         uploadClosesAt={opened.wedding.readOnlyAt?.toISOString() ?? null}
+        liveWindow={liveWindowOf(opened.wedding)}
         initialItems={page.items.map((m) => toGalleryItem(slug, m, hasVideoThumb))}
         initialCursor={page.nextCursor}
         musicEnabled={opened.musicEnabled}

@@ -1,3 +1,4 @@
+import { startOfWarsawDay } from './dates';
 import { DomainError } from './errors';
 import { planLimits, type PlanId } from './plans';
 
@@ -12,8 +13,12 @@ export const WEDDING_STATUSES = [
 export type WeddingStatus = (typeof WEDDING_STATUSES)[number];
 
 export const DELETION_GRACE_DAYS = 14;
-export const DEFAULT_UPLOAD_DAYS = 7;
-export const MAX_UPLOAD_DAYS = 30;
+/** Full calendar days after the wedding day on which guests can still upload. */
+export const MIN_UPLOAD_DAYS = 0;
+export const DEFAULT_UPLOAD_DAYS = 3;
+export const MAX_UPLOAD_DAYS = 3;
+/** Full background activity starts at midnight this many days before the wedding day. */
+export const FULL_ACTIVITY_DAYS_BEFORE = 1;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -38,22 +43,53 @@ export interface WeddingSchedule {
 }
 
 /**
- * Uploads stay open until the end of `uploadDays` after the event; the gallery then stays
- * viewable for the plan's `galleryDays` before it is archived.
+ * Uploads stay open through the wedding day and `uploadDays` further calendar days in Poland, so
+ * they close at the midnight that starts day `uploadDays + 1` after the wedding. The gallery then
+ * stays viewable for the plan's `galleryDays` before it is archived.
  */
 export function computeSchedule(
   eventDate: Date,
   uploadDays: number,
   plan: PlanId,
 ): WeddingSchedule {
-  if (!Number.isInteger(uploadDays) || uploadDays < 1 || uploadDays > MAX_UPLOAD_DAYS) {
+  if (
+    !Number.isInteger(uploadDays) ||
+    uploadDays < MIN_UPLOAD_DAYS ||
+    uploadDays > MAX_UPLOAD_DAYS
+  ) {
     throw new DomainError(
       'invalid_input',
-      `Okno dodawania zdjęć musi mieć od 1 do ${MAX_UPLOAD_DAYS} dni.`,
+      `Zdjęcia można dodawać od ${MIN_UPLOAD_DAYS} do ${MAX_UPLOAD_DAYS} dni po weselu.`,
     );
   }
-  const readOnlyAt = addDays(eventDate, uploadDays);
+  const readOnlyAt = startOfWarsawDay(eventDate, uploadDays + 1);
   return { readOnlyAt, archiveAt: addDays(readOnlyAt, planLimits(plan).galleryDays) };
+}
+
+export interface ActivityWindow {
+  from: Date;
+  until: Date;
+}
+
+/**
+ * When the wedding needs the background worker at full speed: from midnight the day before the
+ * wedding until uploads close, capped at `MAX_UPLOAD_DAYS` after the wedding so a longer legacy
+ * upload window does not keep everything running.
+ */
+export function fullActivityWindow(w: { eventDate: Date; readOnlyAt: Date }): ActivityWindow {
+  const from = startOfWarsawDay(w.eventDate, -FULL_ACTIVITY_DAYS_BEFORE);
+  const cap = startOfWarsawDay(w.eventDate, MAX_UPLOAD_DAYS + 1);
+  const until = w.readOnlyAt < cap ? w.readOnlyAt : cap;
+  return { from, until: until < from ? from : until };
+}
+
+export function isFullyActive(
+  w: Pick<WeddingLifecycle, 'status' | 'blockedAt' | 'readOnlyAt'> & { eventDate: Date },
+  now: Date,
+): boolean {
+  if (w.status !== 'active' || w.blockedAt) return false;
+  const { from, until } = fullActivityWindow(w);
+  return now >= from && now < until;
 }
 
 export function guestCanView(w: Pick<WeddingLifecycle, 'status' | 'blockedAt'>): boolean {

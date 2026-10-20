@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { constantTimeEqual, guestCanView, isValidSlug } from '@vgb/core';
+import { constantTimeEqual, fullActivityWindow, guestCanView, isValidSlug } from '@vgb/core';
 import {
   getMembershipRole,
   getWeddingBySlug,
@@ -8,6 +8,7 @@ import {
   type Wedding,
 } from '@vgb/db';
 import { cookies } from 'next/headers';
+import type { LiveWindow } from '@/components/guest/live-schedule';
 import { env } from './env';
 import { getUser } from './session';
 import { db } from './server';
@@ -83,6 +84,16 @@ export async function resolveViewer(slug: string): Promise<Viewer | null> {
     return { wedding, guestSession: null, isAdmin: true };
   }
   return null;
+}
+
+/** When guest views use SSE; outside it they refresh rarely so Neon can sleep. */
+export function liveWindowOf(wedding: Wedding): LiveWindow {
+  if (wedding.status !== 'active' || wedding.blockedAt || !wedding.readOnlyAt) return null;
+  const { from, until } = fullActivityWindow({
+    eventDate: wedding.eventDate,
+    readOnlyAt: wedding.readOnlyAt,
+  });
+  return { from: from.toISOString(), until: until.toISOString() };
 }
 
 /** For guest-only endpoints (upload, delete own, live feed). */

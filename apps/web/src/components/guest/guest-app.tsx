@@ -8,6 +8,7 @@ import type { GalleryItem } from '@/lib/weddings';
 import { useGuestUpload } from './guest-upload';
 import { GuestHeader, GuestSessionLost } from './guest-header';
 import { Lightbox } from './lightbox';
+import type { LiveWindow } from './live-schedule';
 import { useLiveGallery } from './use-live-gallery';
 
 const ACCEPT =
@@ -69,6 +70,7 @@ export function GuestApp({
   headline,
   canUpload,
   uploadClosesAt,
+  liveWindow,
   initialItems,
   initialCursor,
   musicEnabled,
@@ -77,12 +79,21 @@ export function GuestApp({
   headline: string;
   canUpload: boolean;
   uploadClosesAt: string | null;
+  liveWindow: LiveWindow;
   initialItems: GalleryItem[];
   initialCursor: string | null;
   musicEnabled: boolean;
 }) {
-  const gallery = useLiveGallery(slug, initialItems, initialCursor);
+  const gallery = useLiveGallery(slug, liveWindow, initialItems, initialCursor);
   const uploads = useGuestUpload();
+  const { expectOwnUpload } = gallery;
+  const mineCount = uploads.mine.size;
+  const prevMineCount = useRef(mineCount);
+
+  useEffect(() => {
+    if (mineCount > prevMineCount.current) expectOwnUpload();
+    prevMineCount.current = mineCount;
+  }, [mineCount, expectOwnUpload]);
   const [openIndex, setOpenIndex] = useState<number | null>(null);
   const accept = useAcceptAttribute();
   const inputRef = useRef<HTMLInputElement>(null);

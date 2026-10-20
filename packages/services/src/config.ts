@@ -39,6 +39,13 @@ const schema = z
     SMTP_URL: optional,
 
     SENTRY_DSN: optional,
+
+    WORKER_WAKE_URL: optional.pipe(z.url().optional()),
+    WORKER_WAKE_TOKEN: optional.pipe(z.string().min(32).optional()),
+    WORKER_WAKE_PORT: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.coerce.number().int().min(1).max(65535).default(8081),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.VIDEO_PROVIDER !== 'cloudflare') return;
