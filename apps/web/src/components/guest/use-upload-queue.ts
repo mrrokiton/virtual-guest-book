@@ -35,6 +35,11 @@ export interface UploadTask {
   mediaId?: string;
 }
 
+export interface UploadContext {
+  bingoTaskId?: string;
+  replaceSubmissionId?: string;
+}
+
 const MB = 1024 * 1024;
 
 function isVideo(file: File): boolean {
@@ -48,6 +53,7 @@ export function useUploadQueue(
 ) {
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const files = useRef(new Map<string, File>());
+  const contexts = useRef(new Map<string, UploadContext>());
   /** Media id issued for a task, reused by its retries. */
   const slots = useRef(new Map<string, string>());
   const running = useRef(new Set<string>());
@@ -109,6 +115,7 @@ export function useUploadQueue(
                   size: body.size,
                   durationSeconds,
                   retryOf: slots.current.get(key),
+                  ...contexts.current.get(key),
                 }),
               },
             );
@@ -139,6 +146,7 @@ export function useUploadQueue(
         patch(key, { status: 'done', progress: 1, mediaId });
         onUploadedRef.current(mediaId);
         files.current.delete(key);
+        contexts.current.delete(key);
         slots.current.delete(key);
       } catch (err) {
         patch(key, {
@@ -165,11 +173,12 @@ export function useUploadQueue(
     }
   }, [tasks, process]);
 
-  const add = useCallback((list: FileList | File[]) => {
+  const add = useCallback((list: FileList | File[], context: UploadContext = {}) => {
     const added: UploadTask[] = [];
     for (const file of Array.from(list)) {
       const key = crypto.randomUUID();
       files.current.set(key, file);
+      contexts.current.set(key, context);
       const video = isVideo(file);
       added.push({
         key,
@@ -196,6 +205,7 @@ export function useUploadQueue(
         if (t.status === 'done' || t.status === 'error') {
           if (t.previewUrl) URL.revokeObjectURL(t.previewUrl);
           files.current.delete(t.key);
+          contexts.current.delete(t.key);
           slots.current.delete(t.key);
         }
       }

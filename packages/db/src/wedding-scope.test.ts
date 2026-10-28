@@ -233,3 +233,57 @@ describe('music suggestions', () => {
     });
   });
 });
+
+describe('party bingo', () => {
+  it('keeps task submissions scoped and archives used tasks', async () => {
+    const a = await makeWedding('Bingo A');
+    const b = await makeWedding('Bingo B');
+    const scopeA = weddingScope(db, a.wedding.id);
+    const scopeB = weddingScope(db, b.wedding.id);
+    const task = await scopeA.bingo.tasks.create('Zdjęcie z parą młodą');
+    const session = await scopeA.guestSessions.create({ displayName: 'Ola' });
+
+    const upload = await scopeA.bingo.createUpload({
+      taskId: task.id,
+      guestSessionId: session.id,
+      media: {
+        ...photo,
+        status: 'uploading',
+        guestSessionId: session.id,
+        uploaderName: 'Ola',
+      },
+    });
+    expect(upload?.submission.taskId).toBe(task.id);
+    expect((await scopeB.bingo.tasks.list()).length).toBe(0);
+    expect(await scopeB.bingo.getSubmissionByMedia(upload!.media.id)).toBeNull();
+    expect(await scopeA.bingo.tasks.remove(task.id)).toBe('archived');
+    expect(await scopeA.bingo.tasks.list()).toEqual([]);
+    expect((await scopeA.bingo.tasks.list(true))[0]?.id).toBe(task.id);
+  });
+
+  it('withdraws an accepted photo atomically and excludes it from the gallery', async () => {
+    const { wedding, owner } = await makeWedding('Bingo replacement');
+    const scope = weddingScope(db, wedding.id);
+    const task = await scope.bingo.tasks.create('Szalony taniec');
+    const session = await scope.guestSessions.create({ displayName: 'Jan' });
+    const upload = await scope.bingo.createUpload({
+      taskId: task.id,
+      guestSessionId: session.id,
+      media: {
+        ...photo,
+        status: 'ready',
+        guestSessionId: session.id,
+        uploaderName: 'Jan',
+      },
+    });
+    await scope.bingo.markSubmitted(upload!.media.id);
+    expect(
+      await scope.bingo.verify(upload!.submission.id, 'accepted', owner.id, null),
+    ).not.toBeNull();
+    expect((await scope.media.gallery()).items).toEqual([]);
+
+    const removed = await scope.bingo.withdrawOwned(upload!.media.id, session.id);
+    expect(removed?.media.status).toBe('deleted');
+    expect((await scope.bingo.guestData(session.id)).submissions).toEqual([]);
+  });
+});

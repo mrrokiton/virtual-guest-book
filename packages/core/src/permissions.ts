@@ -10,6 +10,8 @@ export type AdminAction =
   | 'wedding.delete'
   | 'wedding.restore'
   | 'media.moderate'
+  | 'bingo.manage'
+  | 'bingo.verify'
   | 'export.download';
 
 const ROLE_ACTIONS: Record<WeddingRole, ReadonlySet<AdminAction>> = {
@@ -22,12 +24,16 @@ const ROLE_ACTIONS: Record<WeddingRole, ReadonlySet<AdminAction>> = {
     'wedding.delete',
     'wedding.restore',
     'media.moderate',
+    'bingo.manage',
+    'bingo.verify',
     'export.download',
   ]),
   co_admin: new Set<AdminAction>([
     'wedding.view',
     'wedding.edit',
     'media.moderate',
+    'bingo.manage',
+    'bingo.verify',
     'export.download',
   ]),
 };

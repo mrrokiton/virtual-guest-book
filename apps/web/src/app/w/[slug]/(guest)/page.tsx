@@ -41,6 +41,7 @@ export default async function GuestPage({ params }: Props) {
         initialItems={page.items.map((m) => toGalleryItem(slug, m, hasVideoThumb))}
         initialCursor={page.nextCursor}
         musicEnabled={opened.musicEnabled}
+        bingoEnabled={opened.bingoEnabled}
       />
     </GuestShell>
   );

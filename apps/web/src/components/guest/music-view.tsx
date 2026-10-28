@@ -11,11 +11,13 @@ export function MusicView({
   headline,
   liveWindow,
   initial,
+  bingoEnabled,
 }: {
   slug: string;
   headline: string;
   liveWindow: LiveWindow;
   initial: MusicPanelData;
+  bingoEnabled: boolean;
 }) {
   const live = useLiveMusic(slug, liveWindow, initial);
   if (live.sessionLost) return <GuestSessionLost />;
@@ -26,6 +28,7 @@ export function MusicView({
         headline={headline}
         section="music"
         musicEnabled
+        bingoEnabled={bingoEnabled}
         degraded={live.mode === 'polling'}
       />
       <MusicPanel slug={slug} data={live.data} reload={live.refresh} moduleOff={live.moduleOff} />

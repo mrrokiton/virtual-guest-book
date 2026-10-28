@@ -1,3 +1,4 @@
+export * from './bingo';
 export * from './dates';
 export * from './errors';
 export * from './jobs';

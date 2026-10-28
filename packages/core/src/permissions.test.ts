@@ -7,6 +7,8 @@ describe('roleCan', () => {
     expect(roleCan('co_admin', 'wedding.delete')).toBe(false);
     expect(roleCan('co_admin', 'wedding.invite')).toBe(false);
     expect(roleCan('co_admin', 'wedding.rotate_pin')).toBe(false);
+    expect(roleCan('co_admin', 'bingo.manage')).toBe(true);
+    expect(roleCan('co_admin', 'bingo.verify')).toBe(true);
   });
 
   it('gives owners every action', () => {

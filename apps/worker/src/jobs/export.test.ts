@@ -2,7 +2,7 @@ import { EXPORT_SUPERSEDED, mediaStorageKey } from '@vgb/core';
 import { weddingScope } from '@vgb/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestContext, makeWedding, type TestContext } from '../test-utils';
-import { exportKey, exportWedding } from './export';
+import { bingoFolderName, exportKey, exportWedding } from './export';
 
 let ctx: TestContext;
 
@@ -15,6 +15,16 @@ afterAll(async () => {
 });
 
 describe('exportWedding', () => {
+  it('creates collision-proof, portable Bingo folder names', () => {
+    expect(
+      bingoFolderName({
+        id: 'a1b2c3d4-0000-0000-0000-000000000000',
+        body: 'Zrób zdjęcie z parą młodą / CON',
+        position: 0,
+      }),
+    ).toBe('01_Zrob_zdjecie_z_para_mloda_CON_a1b2c3d4');
+  });
+
   it('streams ready photos and videos into a ZIP and skips hidden ones', async () => {
     const { wedding } = await makeWedding(ctx.db, { eventDate: new Date('2026-07-04T14:00:00Z') });
     const scope = weddingScope(ctx.db, wedding.id);
@@ -67,6 +77,36 @@ describe('exportWedding', () => {
     expect(zip).toContain('VIDEO-BYTES');
     expect(ctx.mails.some((m) => m.subject.startsWith('Paczka zdjęć gotowa'))).toBe(true);
     expect(done?.notifiedAt).not.toBeNull();
+  });
+
+  it('puts pending and accepted Bingo photos into task folders without gallery copies', async () => {
+    const { wedding } = await makeWedding(ctx.db, { eventDate: new Date('2026-07-04T14:00:00Z') });
+    const scope = weddingScope(ctx.db, wedding.id);
+    const session = await scope.guestSessions.create({ displayName: 'Ola' });
+    const task = await scope.bingo.tasks.create('Zdjęcie z parą młodą');
+    const upload = await scope.bingo.createUpload({
+      taskId: task.id,
+      guestSessionId: session.id,
+      media: {
+        kind: 'photo',
+        status: 'ready',
+        declaredContentType: 'image/jpeg',
+        declaredSizeBytes: 5,
+        guestSessionId: session.id,
+        uploaderName: 'Ola',
+      },
+    });
+    const fullKey = mediaStorageKey(wedding.id, upload!.media.id, 'full.jpg');
+    await scope.media.update(upload!.media.id, { variants: { full: fullKey } });
+    await scope.bingo.markSubmitted(upload!.media.id);
+    await ctx.memory.put(fullKey, Buffer.from('BINGO-PHOTO'), 'image/jpeg');
+
+    const row = await scope.exports.create(null);
+    await exportWedding(ctx, { weddingId: wedding.id, exportId: row.id, notify: false });
+    const zip = (await ctx.memory.getBuffer(exportKey(wedding.id, row.id))).toString('latin1');
+    expect(zip).toContain(`Bingo/${bingoFolderName(task)}/`);
+    expect(zip).toContain('BINGO-PHOTO');
+    expect(zip).not.toMatch(/zdjecia\/.*Ola/);
   });
 
   const readyMail = () => ctx.mails.filter((m) => m.subject.startsWith('Paczka zdjęć gotowa'));

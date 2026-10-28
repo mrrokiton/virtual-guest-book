@@ -17,6 +17,7 @@ export default async function WeddingLayout({
   const tabs = [
     { href: base, label: 'Przegląd' },
     { href: `${base}/media`, label: 'Zdjęcia i filmy' },
+    { href: `${base}/bingo`, label: 'Bingo' },
     { href: `${base}/settings`, label: 'Ustawienia' },
     { href: `${base}/team`, label: 'Zespół' },
   ];

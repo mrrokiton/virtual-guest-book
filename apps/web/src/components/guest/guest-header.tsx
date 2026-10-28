@@ -45,12 +45,14 @@ export function GuestHeader({
   headline,
   section,
   musicEnabled,
+  bingoEnabled,
   degraded,
 }: {
   slug: string;
   headline: string;
-  section: 'photos' | 'music';
+  section: 'photos' | 'music' | 'bingo';
   musicEnabled: boolean;
+  bingoEnabled: boolean;
   degraded: boolean;
 }) {
   return (
@@ -66,7 +68,7 @@ export function GuestHeader({
           </span>
         )}
       </div>
-      {musicEnabled ? (
+      {musicEnabled || bingoEnabled ? (
         <nav
           aria-label="Sekcje"
           className="mx-auto mt-2 flex max-w-5xl gap-1 rounded-lg bg-muted p-0.5"
@@ -74,9 +76,16 @@ export function GuestHeader({
           <SectionLink href={`/w/${slug}`} active={section === 'photos'}>
             Zdjęcia
           </SectionLink>
-          <SectionLink href={`/w/${slug}/music`} active={section === 'music'}>
-            Utwory
-          </SectionLink>
+          {musicEnabled ? (
+            <SectionLink href={`/w/${slug}/music`} active={section === 'music'}>
+              Utwory
+            </SectionLink>
+          ) : null}
+          {bingoEnabled ? (
+            <SectionLink href={`/w/${slug}/bingo`} active={section === 'bingo'}>
+              Bingo
+            </SectionLink>
+          ) : null}
         </nav>
       ) : null}
     </header>

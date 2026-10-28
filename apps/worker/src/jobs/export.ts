@@ -8,7 +8,7 @@ import {
   weddingStoragePrefix,
   type WeddingExportJob,
 } from '@vgb/core';
-import { getWeddingById, weddingScope, type Media } from '@vgb/db';
+import { getWeddingById, weddingScope, type BingoTask, type Media } from '@vgb/db';
 import { emails } from '@vgb/services';
 import { ZipArchive } from 'archiver';
 import { dashboardUrl, type Context } from '../context';
@@ -40,6 +40,23 @@ function safeName(name: string | null): string {
     .replace(/^_+|_+$/g, '')
     .slice(0, 30);
   return cleaned ? `_${cleaned}` : '';
+}
+
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+export function bingoFolderName(task: Pick<BingoTask, 'id' | 'body' | 'position'>): string {
+  const raw = safeName(task.body).replace(/^_/, '').slice(0, 70);
+  const base = !raw || WINDOWS_RESERVED.test(raw) ? 'zadanie' : raw;
+  return `${pad(task.position + 1, 2)}_${base}_${task.id.replaceAll('-', '').slice(0, 8)}`;
+}
+
+export function bingoEntryName(
+  m: Media,
+  task: Pick<BingoTask, 'id' | 'body' | 'position'>,
+  index: number,
+  total: number,
+): string {
+  return `Bingo/${bingoFolderName(task)}/${pad(index + 1, String(total).length)}_${stamp(m.createdAt)}${safeName(m.uploaderName)}.jpg`;
 }
 
 export function entryName(m: Media, index: number, total: number): string {
@@ -102,7 +119,10 @@ async function buildZip(ctx: Context, weddingId: string, exportId: string): Prom
     { from: ['pending', 'running', 'failed'] },
   );
   if (!claimed) return false;
-  const items = await scope.media.listForExport();
+  const [items, bingoItems] = await Promise.all([
+    scope.media.listForExport(),
+    scope.bingo.listForExport(),
+  ]);
   const key = exportKey(weddingId, exportId);
 
   const zip = new ZipArchive({ store: true });
@@ -131,6 +151,33 @@ async function buildZip(ctx: Context, weddingId: string, exportId: string): Prom
           source.once('error', reject);
         });
         zip.append(source, { name: entryName(m, i, items.length), date: m.createdAt });
+        await done;
+        included += 1;
+      }
+      const taskTotals = new Map<string, number>();
+      const taskIndexes = new Map<string, number>();
+      for (const item of bingoItems) {
+        taskTotals.set(item.task.id, (taskTotals.get(item.task.id) ?? 0) + 1);
+      }
+      for (const item of bingoItems) {
+        const source = await openSource(ctx, item.media).catch((err) => {
+          console.error('[export] could not open bingo media %s', item.media.id, err);
+          return null;
+        });
+        if (!source) {
+          skipped.push(item.media.id);
+          continue;
+        }
+        const index = taskIndexes.get(item.task.id) ?? 0;
+        taskIndexes.set(item.task.id, index + 1);
+        const done = new Promise<void>((resolve, reject) => {
+          source.once('end', resolve);
+          source.once('error', reject);
+        });
+        zip.append(source, {
+          name: bingoEntryName(item.media, item.task, index, taskTotals.get(item.task.id) ?? 1),
+          date: item.media.createdAt,
+        });
         await done;
         included += 1;
       }

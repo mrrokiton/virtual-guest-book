@@ -85,7 +85,7 @@ Apps must not import `drizzle-orm` directly. ESLint enforces that in `apps/**` s
 | `docker-compose.yml`                    | Postgres 17, MinIO, MinIO bucket setup, Mailpit                                                   |
 | `.github/workflows/ci.yml`              | `check` (format, lint, typecheck, test, build) then `e2e` on compose                              |
 
-`pnpm-workspace.yaml` includes `packages/modules/*`. That directory does not exist. `wedding_modules` holds per-wedding flags. The implemented key is `music_requests` (`enabled`, `config.fairQueue`).
+`pnpm-workspace.yaml` includes `packages/modules/*`. That directory does not exist. `wedding_modules` holds per-wedding flags. Implemented keys are `music_requests` (`enabled`, `config.fairQueue`) and `party_bingo` (`enabled`).
 
 ## Architecture relationships
 
@@ -127,7 +127,7 @@ Local substitutes: Postgres and MinIO from `docker-compose.yml`, `VIDEO_PROVIDER
 4. Photos move to `processing` and enqueue `photo-process`. The worker sniffs magic bytes (`detectMedia`), converts HEIC, strips EXIF, writes variants `thumb` (400 webp), `large` (1600 webp), and `full` (4096 jpeg), then publishes `media.ready`.
 5. Cloudflare videos stay `processing` until the webhook calls `markVideoReady`. Local videos become `ready` in `/complete` after a 64-byte sniff, then `publishMediaEvent`.
 6. Gallery: `GET /api/w/[slug]/media` calls `media.gallery` (status `ready` only) and returns cursor pages (`limit` default 30, max 60). Wedding members use the same ready-only feed. The dashboard media page uses `media.adminList` (everything except `deleted` and `uploading`). File bytes are never proxied. `GET .../file` defaults to `v=large`. `v=thumb|large|full` redirects to a 10-minute signed URL. `dl=1` is valid only with `v=full` on a photo: the signed response sets `Content-Disposition: attachment` and `Content-Type: application/octet-stream`, filename `zdjecie-{mediaId}.jpg` (the `full` JPEG; the original is deleted after processing). Any other `dl=1` is 404. Gallery `<img>` requests omit `dl`. `?v=play` returns JSON `{ type: 'iframe' | 'file', url }`. Stream playback tokens last 1 hour (`TOKEN_TTL_SECONDS` in `packages/services/src/video.ts`).
-7. Live updates: `GET /api/w/[slug]/events` (SSE). `RealtimeHub` holds one `LISTEN vgb_media` per web process. Events are `media.ready`, `media.removed`, `music.changed`, and `resync`. The gallery merges media rows (`use-live-gallery.ts`). The music page refetches `GET /music` on `music.changed` (`use-live-music.ts`). Both use `use-live-updates.ts`, scheduled by `live-schedule.ts`. The guest page passes `liveWindowOf(wedding)` (`apps/web/src/lib/guest.ts`, from `fullActivityWindow`; null unless `active` and not blocked). Inside the window the page opens SSE; after 3 EventSource failures it polls every 30 s. Outside the window there is no SSE: it refreshes every 10 minutes, and 10 s and 30 s after the guest's own upload. A hidden tab closes the stream and stops polling; becoming visible reconnects and refreshes. A timer switches modes at the window edges. Postgres reconnect sends `resync`. A page keeps one stream.
+7. Live updates: `GET /api/w/[slug]/events` (SSE). `RealtimeHub` holds one `LISTEN vgb_media` per web process. Events are `media.ready`, `media.removed`, `music.changed`, `bingo.changed`, and `resync`. The gallery merges media rows (`use-live-gallery.ts`). Module pages refetch their scoped data on change events. All guest views use `use-live-updates.ts`, scheduled by `live-schedule.ts`. The guest page passes `liveWindowOf(wedding)` (`apps/web/src/lib/guest.ts`, from `fullActivityWindow`; null unless `active` and not blocked). Inside the window the page opens SSE; after 3 EventSource failures it polls every 30 s. Outside the window there is no SSE: it refreshes every 10 minutes. A hidden tab closes the stream and stops polling; becoming visible reconnects and refreshes. A timer switches modes at the window edges. Postgres reconnect sends `resync`. A page keeps one stream.
 
 ### Music suggestions
 
@@ -138,6 +138,14 @@ Guests add `track` or `genre` text while `guestCanUpload` is true. The list stay
 Photos stay on `/w/[slug]`. Suggestions are a separate page, `/w/[slug]/music`. The sticky header links **Zdjęcia** and **Utwory** only while the module is enabled. `/music` redirects to the gallery when the module is off. An already open music page that then gets 404 keeps the list and hides the form. The upload bar is mounted for both guest pages, so a queued photo keeps going when the guest opens tracks. DJ entry stays outside that group. Create, delete, status change, and a fair-queue rerank publish `music.changed` on `vgb_media`. That event carries only `weddingId`. The music page replaces `open`, `history`, and the caps from `GET /music` and leaves the form draft in place. Order still comes from `listOpen` and `listHistory`. The music page shows only the three most recently closed suggestions.
 
 Fair queue off: open rows follow `created_at`. Fair queue on: the first 3 open rows keep their `queue_rank`. New rows are inserted only after that head. Rank is written on create and when the couple changes the setting, not on page refresh. Marking `played` or `skipped` hides the row from the queue and keeps its rank, so undo puts it back. Everyone sees `author_name` (or "Gość"). Session ids are not in the JSON.
+
+### Party bingo
+
+Off unless `wedding_modules.module_key = party_bingo` is enabled. Configuration is on `/dashboard/weddings/[id]/bingo/settings`; tasks and the text-only validator list are scoped to one wedding. Owner and co-admin manage and verify Bingo through existing Better Auth membership. Platform admins retain no access to wedding media.
+
+Guests use `/w/[slug]/bingo` through the existing signed guest session. A display name is required before the first submission. Each active `(task, guest session)` has at most one non-withdrawn submission. Uploads reuse `media` and the photo worker but are excluded from the ordinary gallery and media moderation list. Replacing or deleting a submission marks the old media deleted, withdraws the submission, and resets verification. Progress is derived from active tasks and current submissions; rejected takes precedence over incomplete.
+
+`bingo.changed` causes the guest page to refetch; `media.ready` covers completion by the photo worker. ZIP export streams pending and accepted Bingo photos under collision-proof `Bingo/<task>/` folders without copying storage objects. Rejected, withdrawn, failed, processing, and deleted attempts are excluded.
 
 ### Lifecycle
 
@@ -200,6 +208,8 @@ All under `/api/w/[slug]`. Slug must match `^[a-z2-7]{24}$`.
 | `DELETE /music/[id]`               | Author of the row                                       | 204 soft delete. 404 for someone else's row                                                                                                                                           |
 | `POST /music/[id]/status`          | DJ session only                                         | Body `{ status: open\|played\|skipped }`. 403 for a normal guest                                                                                                                      |
 | `POST /dj`                         | Public, like PIN                                        | Body `{ token, displayName?, acceptTerms: true }`. Sets the guest cookie on a `dj` session                                                                                            |
+| `GET /bingo`                       | Guest cookie, module enabled                            | Personal tasks, current submissions, validator list, display name, and mutation availability. 404 if the module is off                                                                |
+| `POST /bingo/profile`              | Guest cookie                                            | Sets the non-empty display name required before a Bingo submission                                                                                                                    |
 
 PIN limits (`session/route.ts`): 10 failures per device per wedding, then 15-minute lock from the last failure; 300 failures per wedding per 15 minutes; 100 successful new sessions per IP per wedding per 15 minutes. IP is HMAC'd (`ipKey`) and not stored raw. Upload limit: 150 starts per guest session per 10 minutes. Photo PUT URLs last 5 minutes. Local-video PUT URLs use the storage default of 15 minutes.
 
@@ -234,6 +244,8 @@ Dashboard mutations are server actions in `apps/web/src/app/dashboard/actions.ts
 | `requestDeletionAction`                     | `wedding.delete`                                             |
 | `restoreWeddingAction`                      | `wedding.restore`                                            |
 | `requestExportAction`                       | `export.download`                                            |
+| Bingo configuration actions                 | `bingo.manage`                                               |
+| Bingo verification action                   | `bingo.verify`                                               |
 
 Platform actions in `apps/web/src/app/admin/actions.ts`: `approveWeddingAction`, `setWeddingBlockedAction`. Caller must be in `platform_admins`. Blocking does not grant gallery access.
 
@@ -241,13 +253,13 @@ Platform actions in `apps/web/src/app/admin/actions.ts`: `approveWeddingAction`,
 
 `owner`: view, edit, activate, rotate PIN, invite, delete, restore, moderate, download export.
 
-`co_admin`: view, edit, moderate, download export.
+`co_admin`: view, edit, moderate, manage and verify Bingo, download export.
 
 `platform_admins`: list accounts and weddings, approve, block. No gallery permission (`packages/core/src/permissions.ts`).
 
 ## Database schema
 
-Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migrations: `0000_init`, `0001_wedding_approval`, `0002_export_size_bigint`, `0003_reprocess_attempts_notified_at`, `0004_music_suggestions`.
+Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migrations: `0000_init`, `0001_wedding_approval`, `0002_export_size_bigint`, `0003_reprocess_attempts_notified_at`, `0004_music_suggestions`, `0005_loud_peter_parker`.
 
 ### Better Auth tables
 
@@ -267,7 +279,10 @@ Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migratio
 | `wedding_dj_links`  | SHA-256 `token_hash`, optional label, `revoked_at`. Raw token is not stored                                                                 |
 | `music_suggestions` | `kind` `track` or `genre`, `body`, `body_key`, status `open`/`played`/`skipped`, `queue_rank`, `author_name`, `details` jsonb, `deleted_at` |
 | `media`             | One file. See statuses below. Partial unique index on `video_uid`                                                                           |
-| `wedding_modules`   | PK `(wedding_id, module_key)`. `music_requests` is read by the guest page and settings                                                      |
+| `bingo_tasks`       | Stable, ordered task UUIDs per wedding. Used tasks are archived instead of deleted                                                          |
+| `bingo_validators`  | Text-only names and optional nicknames shown after all required photos are present                                                          |
+| `bingo_submissions` | Task/session/media association, verification status, verifier metadata, and withdrawal timestamp                                            |
+| `wedding_modules`   | PK `(wedding_id, module_key)`. Flags for `music_requests` and `party_bingo`                                                                 |
 | `exports`           | ZIP job row. `size_bytes` is bigint. `notified_at` added in `0003`                                                                          |
 | `audit_log`         | `bigserial` id. `wedding_id` is not a foreign key                                                                                           |
 | `rate_limits`       | PK `key`, `count`, `reset_at`                                                                                                               |
@@ -284,7 +299,7 @@ Schedule: `uploadDays` is full days after `event_date` (0–3, default 3). `read
 
 ### Media status
 
-`uploading` → `processing` → `ready`. Failures become `failed`. Moderation sets `hidden` or `deleted`. `purged_at` is set after object deletion. Guest gallery shows `ready`. Wedding members can also open `hidden` files.
+`uploading` → `processing` → `ready`. Failures become `failed`. Moderation sets `hidden` or `deleted`. `purged_at` is set after object deletion. Guest gallery shows ordinary `ready` media; media ever associated with Bingo is excluded and available through Bingo views. Wedding members can also open `hidden` ordinary files.
 
 Kinds: `photo`, `video`. Storage keys: `weddings/<weddingId>/media/<mediaId>/<name>` via `mediaStorageKey`.
 
@@ -395,7 +410,7 @@ Implemented behavior with a known gap:
 - Better Auth's own in-memory limiter is replaced by Postgres storage, but the comment in `tasks/todo.md` still records the original in-memory concern as accepted before that change. The code path is `customStorage` in `apps/web/src/lib/auth.ts`.
 - `pnpm audit` finding called out in `docs/runbook.md`: moderate `esbuild` via `drizzle-kit`, dev-only.
 - HEIC is implemented (`heic-convert`) but `tasks/todo.md` says there is no iPhone fixture, so HEIC was not verified end to end.
-- `packages/modules/*` is in the workspace and has no packages. `wedding_modules` is used for `music_requests` only.
+- `packages/modules/*` is in the workspace and has no packages. Module flags are implemented directly through `wedding_modules`.
 - Plan changes are not a product screen. The runbook uses SQL (`update weddings set plan = 'premium' ...`). Checkout does not exist.
 - Local video mode stores the uploaded file and does not transcode duration. Duration is whatever the client sent at upload time.
 - Mux is named in `tasks/todo.md` as a fallback. The code only has `local` and `cloudflare`.

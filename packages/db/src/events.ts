@@ -6,7 +6,8 @@ export const MEDIA_CHANNEL = 'vgb_media';
 export type MediaEvent =
   | { type: 'media.ready'; weddingId: string; mediaId: string }
   | { type: 'media.removed'; weddingId: string; mediaId: string }
-  | { type: 'music.changed'; weddingId: string };
+  | { type: 'music.changed'; weddingId: string }
+  | { type: 'bingo.changed'; weddingId: string };
 
 /** Cross-process fan-out: the worker and every web instance see this via LISTEN. */
 export async function publishMediaEvent(db: Database, event: MediaEvent): Promise<void> {
@@ -18,12 +19,18 @@ export async function publishMusicChanged(db: Database, weddingId: string): Prom
   await publishMediaEvent(db, { type: 'music.changed', weddingId });
 }
 
+export async function publishBingoChanged(db: Database, weddingId: string): Promise<void> {
+  await publishMediaEvent(db, { type: 'bingo.changed', weddingId });
+}
+
 export function parseMediaEvent(payload: string | undefined): MediaEvent | null {
   if (!payload) return null;
   try {
     const e = JSON.parse(payload) as { type?: string; weddingId?: string; mediaId?: string };
     if (typeof e.weddingId !== 'string' || !e.weddingId) return null;
-    if (e.type === 'music.changed') return { type: 'music.changed', weddingId: e.weddingId };
+    if (e.type === 'music.changed' || e.type === 'bingo.changed') {
+      return { type: e.type, weddingId: e.weddingId };
+    }
     if ((e.type === 'media.ready' || e.type === 'media.removed') && e.mediaId) {
       return { type: e.type, weddingId: e.weddingId, mediaId: e.mediaId };
     }

@@ -1,9 +1,10 @@
-import { guestCanUpload, guestCanView } from '@vgb/core';
-import type { GuestSession, Wedding } from '@vgb/db';
+import { BINGO_MODULE_KEY, guestCanUpload, guestCanView } from '@vgb/core';
+import { weddingScope, type GuestSession, type Wedding } from '@vgb/db';
 import type { CSSProperties, ReactNode } from 'react';
 import { PinForm } from '@/components/guest/pin-form';
 import { findWedding, getGuestSession } from '@/lib/guest';
 import { loadMusicModule } from '@/lib/music';
+import { db } from '@/lib/server';
 import { formatDate } from '@/lib/utils';
 
 export function headlineOf(w: Wedding): string {
@@ -45,6 +46,7 @@ export type OpenGuest =
       session: GuestSession;
       headline: string;
       musicEnabled: boolean;
+      bingoEnabled: boolean;
       canUpload: boolean;
     };
 
@@ -113,13 +115,18 @@ export async function openGuest(slug: string): Promise<OpenGuest> {
   }
 
   const now = new Date();
+  const [music, bingoEnabled] = await Promise.all([
+    loadMusicModule(wedding.id),
+    weddingScope(db(), wedding.id).modules.isEnabled(BINGO_MODULE_KEY),
+  ]);
   return {
     status: 'ready',
     slug,
     wedding,
     session,
     headline: headlineOf(wedding),
-    musicEnabled: (await loadMusicModule(wedding.id)) !== null,
+    musicEnabled: music !== null,
+    bingoEnabled,
     canUpload: guestCanUpload(wedding, now),
   };
 }

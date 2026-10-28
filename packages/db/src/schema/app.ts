@@ -1,4 +1,5 @@
 import type {
+  BingoSubmissionStatus,
   GuestSessionRole,
   MediaKind,
   MediaStatus,
@@ -253,6 +254,77 @@ export const media = pgTable(
     uniqueIndex('media_video_uid_idx')
       .on(t.videoUid)
       .where(sql`${t.videoUid} is not null`),
+  ],
+);
+
+export const bingoTasks = pgTable(
+  'bingo_tasks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    weddingId: uuid('wedding_id')
+      .notNull()
+      .references(() => weddings.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    position: integer('position').notNull(),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('bingo_tasks_wedding_idx').on(t.weddingId, t.archivedAt, t.position),
+    uniqueIndex('bingo_tasks_wedding_id_idx').on(t.weddingId, t.id),
+  ],
+);
+
+export const bingoValidators = pgTable(
+  'bingo_validators',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    weddingId: uuid('wedding_id')
+      .notNull()
+      .references(() => weddings.id, { onDelete: 'cascade' }),
+    fullName: text('full_name').notNull(),
+    nickname: text('nickname'),
+    position: integer('position').notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('bingo_validators_wedding_idx').on(t.weddingId, t.position)],
+);
+
+export const bingoSubmissions = pgTable(
+  'bingo_submissions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    weddingId: uuid('wedding_id')
+      .notNull()
+      .references(() => weddings.id, { onDelete: 'cascade' }),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => bingoTasks.id, { onDelete: 'restrict' }),
+    guestSessionId: uuid('guest_session_id')
+      .notNull()
+      .references(() => guestSessions.id, { onDelete: 'cascade' }),
+    mediaId: uuid('media_id')
+      .notNull()
+      .references(() => media.id, { onDelete: 'cascade' }),
+    status: text('status').$type<BingoSubmissionStatus>().notNull().default('pending'),
+    rejectionReason: text('rejection_reason'),
+    submittedAt: timestamp('submitted_at', { withTimezone: true, precision: 3 }),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    verifiedByUserId: text('verified_by_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('bingo_submissions_media_idx').on(t.mediaId),
+    uniqueIndex('bingo_submissions_active_idx')
+      .on(t.weddingId, t.taskId, t.guestSessionId)
+      .where(sql`${t.withdrawnAt} is null`),
+    index('bingo_submissions_queue_idx').on(t.weddingId, t.status, t.createdAt.desc()),
+    index('bingo_submissions_guest_idx').on(t.weddingId, t.guestSessionId),
   ],
 );
 

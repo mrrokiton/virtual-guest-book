@@ -1,5 +1,5 @@
 import { detectMedia, planLimits, QUEUES } from '@vgb/core';
-import { publishMediaEvent, weddingScope } from '@vgb/db';
+import { publishBingoChanged, publishMediaEvent, weddingScope } from '@vgb/db';
 import { enqueue } from '@/lib/jobs';
 import { resolveGuest } from '@/lib/guest';
 import { crossOriginResponse, domainErrorResponse, jsonError } from '@/lib/request';
@@ -30,9 +30,15 @@ export async function POST(
         { weddingId: guest.wedding.id, mediaId: media.id },
         { singletonKey: media.id },
       );
+    const markBingoSubmitted = async () => {
+      if (await scope.bingo.markSubmitted(media.id)) {
+        await publishBingoChanged(db(), guest.wedding.id);
+      }
+    };
     if (media.status !== 'uploading') {
       // A retry after the status flipped but the enqueue failed must not strand the photo.
       if (media.kind === 'photo' && media.status === 'processing') await processPhoto();
+      if (media.status === 'processing' || media.status === 'ready') await markBingoSubmitted();
       return Response.json({ status: media.status });
     }
     const current = async () => (await scope.media.get(media.id))?.status ?? 'deleted';
@@ -69,6 +75,7 @@ export async function POST(
         { from: ['uploading'] },
       );
       if (!row) return Response.json({ status: await current() });
+      await markBingoSubmitted();
       await processPhoto();
       return Response.json({ status: 'processing' });
     }

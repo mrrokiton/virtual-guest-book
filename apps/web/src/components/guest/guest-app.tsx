@@ -74,6 +74,7 @@ export function GuestApp({
   initialItems,
   initialCursor,
   musicEnabled,
+  bingoEnabled,
 }: {
   slug: string;
   headline: string;
@@ -83,6 +84,7 @@ export function GuestApp({
   initialItems: GalleryItem[];
   initialCursor: string | null;
   musicEnabled: boolean;
+  bingoEnabled: boolean;
 }) {
   const gallery = useLiveGallery(slug, liveWindow, initialItems, initialCursor);
   const uploads = useGuestUpload();
@@ -138,6 +140,7 @@ export function GuestApp({
         headline={headline}
         section="photos"
         musicEnabled={musicEnabled}
+        bingoEnabled={bingoEnabled}
         degraded={gallery.mode === 'polling'}
       />
 

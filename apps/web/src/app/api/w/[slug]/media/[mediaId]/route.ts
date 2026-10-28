@@ -1,5 +1,5 @@
 import { canGuestDeleteMedia, mediaPurgeRequest } from '@vgb/core';
-import { publishMediaEvent, weddingScope } from '@vgb/db';
+import { publishBingoChanged, publishMediaEvent, weddingScope } from '@vgb/db';
 import { enqueue } from '@/lib/jobs';
 import { resolveGuest } from '@/lib/guest';
 import { crossOriginResponse, domainErrorResponse, jsonError } from '@/lib/request';
@@ -26,17 +26,21 @@ export async function DELETE(
     if (!media || media.status === 'deleted' || !canGuestDeleteMedia(media, guest.session.id)) {
       return jsonError(404, 'Nie znaleziono pliku.');
     }
-    const deleted = await scope.media.update(
-      media.id,
-      { status: 'deleted', deletedAt: new Date() },
-      { from: [media.status] },
-    );
+    const bingoSubmission = await scope.bingo.getSubmissionByMedia(media.id);
+    const deleted = bingoSubmission
+      ? (await scope.bingo.withdrawOwned(media.id, guest.session.id))?.media
+      : await scope.media.update(
+          media.id,
+          { status: 'deleted', deletedAt: new Date() },
+          { from: [media.status] },
+        );
     if (!deleted) return jsonError(409, 'Plik zmienił się w międzyczasie. Odśwież stronę.');
     await publishMediaEvent(db(), {
       type: 'media.removed',
       weddingId: guest.wedding.id,
       mediaId: media.id,
     });
+    if (bingoSubmission) await publishBingoChanged(db(), guest.wedding.id);
     await enqueue(...mediaPurgeRequest(guest.wedding.id, media.id));
     await scope.audit({
       actorType: 'guest',

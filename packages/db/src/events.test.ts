@@ -15,6 +15,12 @@ describe('parseMediaEvent', () => {
     ).toEqual({ type: 'music.changed', weddingId: 'w1' });
   });
 
+  it('accepts a Bingo change signal without exposing row ids', () => {
+    expect(
+      parseMediaEvent(JSON.stringify({ type: 'bingo.changed', weddingId: 'w1', mediaId: 'nope' })),
+    ).toEqual({ type: 'bingo.changed', weddingId: 'w1' });
+  });
+
   it('still accepts gallery events', () => {
     expect(
       parseMediaEvent(JSON.stringify({ type: 'media.removed', weddingId: 'w1', mediaId: 'm1' })),

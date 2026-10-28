@@ -36,6 +36,7 @@ export default async function GuestMusicPage({ params }: Props) {
         headline={opened.headline}
         liveWindow={liveWindowOf(opened.wedding)}
         initial={music}
+        bingoEnabled={opened.bingoEnabled}
       />
     </GuestShell>
   );

@@ -1,5 +1,6 @@
 import {
   and,
+  asc,
   count,
   desc,
   eq,
@@ -27,6 +28,9 @@ import type { Database } from './client';
 import { decodeCursor, encodeCursor } from './cursor';
 import {
   auditLog,
+  bingoSubmissions,
+  bingoTasks,
+  bingoValidators,
   exports,
   guestSessions,
   media,
@@ -41,6 +45,9 @@ export type Media = typeof media.$inferSelect;
 export type NewMedia = Omit<typeof media.$inferInsert, 'id' | 'weddingId' | 'createdAt'>;
 export type GuestSession = typeof guestSessions.$inferSelect;
 export type ExportRow = typeof exports.$inferSelect;
+export type BingoTask = typeof bingoTasks.$inferSelect;
+export type BingoValidator = typeof bingoValidators.$inferSelect;
+export type BingoSubmission = typeof bingoSubmissions.$inferSelect;
 
 export interface Page<T> {
   items: T[];
@@ -105,6 +112,14 @@ export function weddingScope(db: Database, weddingId: string) {
   const mediaIn = (...conds: (SQL | undefined)[]) => and(eq(media.weddingId, weddingId), ...conds);
   const musicWhere = (...conds: (SQL | undefined)[]) =>
     and(eq(musicSuggestions.weddingId, weddingId), ...conds);
+  const bingoTaskWhere = (...conds: (SQL | undefined)[]) =>
+    and(eq(bingoTasks.weddingId, weddingId), ...conds);
+  const bingoSubmissionWhere = (...conds: (SQL | undefined)[]) =>
+    and(eq(bingoSubmissions.weddingId, weddingId), ...conds);
+  const notBingoMedia = sql`not exists (
+    select 1 from ${bingoSubmissions}
+    where ${bingoSubmissions.mediaId} = ${media.id}
+  )`;
 
   async function mediaPage(
     where: SQL | undefined,
@@ -197,13 +212,17 @@ export function weddingScope(db: Database, weddingId: string) {
 
       /** What guests see: processed and not moderated away. */
       gallery(opts: { cursor?: string | null; limit?: number } = {}) {
-        return mediaPage(eq(media.status, 'ready'), opts.cursor, opts.limit ?? 30);
+        return mediaPage(
+          and(eq(media.status, 'ready'), notBingoMedia),
+          opts.cursor,
+          opts.limit ?? 30,
+        );
       },
 
       /** What admins see: everything that still exists. */
       adminList(opts: { cursor?: string | null; limit?: number } = {}) {
         return mediaPage(
-          notInArray(media.status, ['deleted', 'uploading']),
+          and(notInArray(media.status, ['deleted', 'uploading']), notBingoMedia),
           opts.cursor,
           opts.limit ?? 60,
         );
@@ -230,7 +249,7 @@ export function weddingScope(db: Database, weddingId: string) {
         return db
           .select()
           .from(media)
-          .where(mediaIn(eq(media.status, 'ready')))
+          .where(mediaIn(eq(media.status, 'ready'), notBingoMedia))
           .orderBy(media.createdAt);
       },
 
@@ -281,6 +300,21 @@ export function weddingScope(db: Database, weddingId: string) {
           .update(guestSessions)
           .set({ lastSeenAt: new Date() })
           .where(and(eq(guestSessions.weddingId, weddingId), eq(guestSessions.id, id)));
+      },
+
+      async setDisplayName(id: string, displayName: string): Promise<GuestSession | null> {
+        const [row] = await db
+          .update(guestSessions)
+          .set({ displayName, lastSeenAt: new Date() })
+          .where(
+            and(
+              eq(guestSessions.weddingId, weddingId),
+              eq(guestSessions.id, id),
+              isNull(guestSessions.revokedAt),
+            ),
+          )
+          .returning();
+        return row ?? null;
       },
 
       async revokeAll(): Promise<void> {
@@ -511,6 +545,375 @@ export function weddingScope(db: Database, weddingId: string) {
             : disableFairQueue(open);
           await writeMusicRanks(trx, weddingId, ranked);
         });
+      },
+    },
+
+    bingo: {
+      tasks: {
+        list(includeArchived = false) {
+          return db
+            .select()
+            .from(bingoTasks)
+            .where(bingoTaskWhere(includeArchived ? undefined : isNull(bingoTasks.archivedAt)))
+            .orderBy(asc(bingoTasks.position), asc(bingoTasks.createdAt));
+        },
+
+        async create(body: string) {
+          const [position] = await db
+            .select({ next: sql<number>`coalesce(max(${bingoTasks.position}), -1) + 1` })
+            .from(bingoTasks)
+            .where(bingoTaskWhere(isNull(bingoTasks.archivedAt)));
+          const [row] = await db
+            .insert(bingoTasks)
+            .values({ weddingId, body, position: Number(position?.next ?? 0) })
+            .returning();
+          return row!;
+        },
+
+        async update(id: string, body: string) {
+          const [row] = await db
+            .update(bingoTasks)
+            .set({ body, updatedAt: new Date() })
+            .where(bingoTaskWhere(eq(bingoTasks.id, id), isNull(bingoTasks.archivedAt)))
+            .returning();
+          return row ?? null;
+        },
+
+        async reorder(ids: string[]) {
+          await db.transaction(async (tx) => {
+            for (const [position, id] of ids.entries()) {
+              await tx
+                .update(bingoTasks)
+                .set({ position, updatedAt: new Date() })
+                .where(
+                  and(
+                    eq(bingoTasks.weddingId, weddingId),
+                    eq(bingoTasks.id, id),
+                    isNull(bingoTasks.archivedAt),
+                  ),
+                );
+            }
+          });
+        },
+
+        async remove(id: string) {
+          return db.transaction(async (tx) => {
+            const [used] = await tx
+              .select({ n: count() })
+              .from(bingoSubmissions)
+              .where(
+                and(eq(bingoSubmissions.weddingId, weddingId), eq(bingoSubmissions.taskId, id)),
+              );
+            if ((used?.n ?? 0) > 0) {
+              const [row] = await tx
+                .update(bingoTasks)
+                .set({ archivedAt: new Date(), updatedAt: new Date() })
+                .where(
+                  and(
+                    eq(bingoTasks.weddingId, weddingId),
+                    eq(bingoTasks.id, id),
+                    isNull(bingoTasks.archivedAt),
+                  ),
+                )
+                .returning();
+              return row ? 'archived' : null;
+            }
+            const [row] = await tx
+              .delete(bingoTasks)
+              .where(and(eq(bingoTasks.weddingId, weddingId), eq(bingoTasks.id, id)))
+              .returning();
+            return row ? 'deleted' : null;
+          });
+        },
+      },
+
+      validators: {
+        list() {
+          return db
+            .select()
+            .from(bingoValidators)
+            .where(eq(bingoValidators.weddingId, weddingId))
+            .orderBy(asc(bingoValidators.position), asc(bingoValidators.createdAt));
+        },
+
+        async create(fullName: string, nickname: string | null) {
+          const [position] = await db
+            .select({ next: sql<number>`coalesce(max(${bingoValidators.position}), -1) + 1` })
+            .from(bingoValidators)
+            .where(eq(bingoValidators.weddingId, weddingId));
+          const [row] = await db
+            .insert(bingoValidators)
+            .values({ weddingId, fullName, nickname, position: Number(position?.next ?? 0) })
+            .returning();
+          return row!;
+        },
+
+        async update(id: string, fullName: string, nickname: string | null) {
+          const [row] = await db
+            .update(bingoValidators)
+            .set({ fullName, nickname, updatedAt: new Date() })
+            .where(and(eq(bingoValidators.weddingId, weddingId), eq(bingoValidators.id, id)))
+            .returning();
+          return row ?? null;
+        },
+
+        async remove(id: string) {
+          const [row] = await db
+            .delete(bingoValidators)
+            .where(and(eq(bingoValidators.weddingId, weddingId), eq(bingoValidators.id, id)))
+            .returning();
+          return row ?? null;
+        },
+      },
+
+      async createUpload(values: {
+        taskId: string;
+        guestSessionId: string;
+        replaceSubmissionId?: string | null;
+        media: NewMedia;
+      }) {
+        return db.transaction(async (tx) => {
+          let replacedMediaId: string | null = null;
+          const [task] = await tx
+            .select({ id: bingoTasks.id })
+            .from(bingoTasks)
+            .where(
+              and(
+                eq(bingoTasks.weddingId, weddingId),
+                eq(bingoTasks.id, values.taskId),
+                isNull(bingoTasks.archivedAt),
+              ),
+            )
+            .limit(1);
+          const [session] = await tx
+            .select({ id: guestSessions.id })
+            .from(guestSessions)
+            .where(
+              and(
+                eq(guestSessions.weddingId, weddingId),
+                eq(guestSessions.id, values.guestSessionId),
+                isNull(guestSessions.revokedAt),
+              ),
+            )
+            .limit(1);
+          if (!task || !session) return null;
+
+          if (values.replaceSubmissionId) {
+            const [old] = await tx
+              .update(bingoSubmissions)
+              .set({ withdrawnAt: new Date() })
+              .where(
+                and(
+                  eq(bingoSubmissions.weddingId, weddingId),
+                  eq(bingoSubmissions.id, values.replaceSubmissionId),
+                  eq(bingoSubmissions.taskId, values.taskId),
+                  eq(bingoSubmissions.guestSessionId, values.guestSessionId),
+                  isNull(bingoSubmissions.withdrawnAt),
+                ),
+              )
+              .returning({ mediaId: bingoSubmissions.mediaId });
+            if (!old) return null;
+            replacedMediaId = old.mediaId;
+            await tx
+              .update(media)
+              .set({ status: 'deleted', deletedAt: new Date() })
+              .where(and(eq(media.weddingId, weddingId), eq(media.id, old.mediaId)));
+          }
+
+          const [createdMedia] = await tx
+            .insert(media)
+            .values({ ...values.media, weddingId, createdAt: new Date() })
+            .returning();
+          const [submission] = await tx
+            .insert(bingoSubmissions)
+            .values({
+              weddingId,
+              taskId: values.taskId,
+              guestSessionId: values.guestSessionId,
+              mediaId: createdMedia!.id,
+            })
+            .returning();
+          return { media: createdMedia!, submission: submission!, replacedMediaId };
+        });
+      },
+
+      async getSubmissionByMedia(mediaId: string) {
+        const [row] = await db
+          .select()
+          .from(bingoSubmissions)
+          .where(bingoSubmissionWhere(eq(bingoSubmissions.mediaId, mediaId)))
+          .limit(1);
+        return row ?? null;
+      },
+
+      async markSubmitted(mediaId: string) {
+        const [row] = await db
+          .update(bingoSubmissions)
+          .set({ submittedAt: new Date() })
+          .where(
+            bingoSubmissionWhere(
+              eq(bingoSubmissions.mediaId, mediaId),
+              isNull(bingoSubmissions.withdrawnAt),
+            ),
+          )
+          .returning();
+        return row ?? null;
+      },
+
+      async withdrawOwned(mediaId: string, guestSessionId: string) {
+        return db.transaction(async (tx) => {
+          const [submission] = await tx
+            .update(bingoSubmissions)
+            .set({ withdrawnAt: new Date() })
+            .where(
+              and(
+                eq(bingoSubmissions.weddingId, weddingId),
+                eq(bingoSubmissions.mediaId, mediaId),
+                eq(bingoSubmissions.guestSessionId, guestSessionId),
+                isNull(bingoSubmissions.withdrawnAt),
+              ),
+            )
+            .returning();
+          if (!submission) return null;
+          const [removed] = await tx
+            .update(media)
+            .set({ status: 'deleted', deletedAt: new Date() })
+            .where(
+              and(
+                eq(media.weddingId, weddingId),
+                eq(media.id, mediaId),
+                eq(media.guestSessionId, guestSessionId),
+                notInArray(media.status, ['deleted']),
+              ),
+            )
+            .returning();
+          if (!removed) throw new Error('Bingo media could not be withdrawn');
+          return { submission, media: removed };
+        });
+      },
+
+      async verify(
+        submissionId: string,
+        status: 'accepted' | 'rejected',
+        userId: string,
+        rejectionReason: string | null,
+      ) {
+        const [row] = await db
+          .update(bingoSubmissions)
+          .set({
+            status,
+            rejectionReason: status === 'rejected' ? rejectionReason : null,
+            verifiedAt: new Date(),
+            verifiedByUserId: userId,
+          })
+          .where(
+            bingoSubmissionWhere(
+              eq(bingoSubmissions.id, submissionId),
+              isNull(bingoSubmissions.withdrawnAt),
+              sql`exists (
+                select 1 from ${media}
+                where ${media.id} = ${bingoSubmissions.mediaId}
+                  and ${media.weddingId} = ${weddingId}
+                  and ${media.status} = 'ready'
+              )`,
+            ),
+          )
+          .returning();
+        return row ?? null;
+      },
+
+      guestData(guestSessionId: string) {
+        return Promise.all([
+          this.tasks.list(false),
+          this.validators.list(),
+          db
+            .select({
+              submission: bingoSubmissions,
+              media,
+            })
+            .from(bingoSubmissions)
+            .innerJoin(
+              media,
+              and(
+                eq(media.id, bingoSubmissions.mediaId),
+                eq(media.weddingId, bingoSubmissions.weddingId),
+              ),
+            )
+            .where(
+              bingoSubmissionWhere(
+                eq(bingoSubmissions.guestSessionId, guestSessionId),
+                isNull(bingoSubmissions.withdrawnAt),
+              ),
+            ),
+        ]).then(([tasks, validators, submissions]) => ({ tasks, validators, submissions }));
+      },
+
+      adminSubmissions() {
+        return db
+          .select({
+            submission: bingoSubmissions,
+            task: bingoTasks,
+            media,
+            guestName: guestSessions.displayName,
+          })
+          .from(bingoSubmissions)
+          .innerJoin(
+            bingoTasks,
+            and(
+              eq(bingoTasks.id, bingoSubmissions.taskId),
+              eq(bingoTasks.weddingId, bingoSubmissions.weddingId),
+            ),
+          )
+          .innerJoin(
+            guestSessions,
+            and(
+              eq(guestSessions.id, bingoSubmissions.guestSessionId),
+              eq(guestSessions.weddingId, bingoSubmissions.weddingId),
+            ),
+          )
+          .innerJoin(
+            media,
+            and(
+              eq(media.id, bingoSubmissions.mediaId),
+              eq(media.weddingId, bingoSubmissions.weddingId),
+            ),
+          )
+          .where(
+            bingoSubmissionWhere(isNull(bingoSubmissions.withdrawnAt), eq(media.status, 'ready')),
+          )
+          .orderBy(desc(bingoSubmissions.createdAt));
+      },
+
+      listForExport() {
+        return db
+          .select({
+            media,
+            task: bingoTasks,
+            submission: bingoSubmissions,
+          })
+          .from(bingoSubmissions)
+          .innerJoin(
+            bingoTasks,
+            and(
+              eq(bingoTasks.id, bingoSubmissions.taskId),
+              eq(bingoTasks.weddingId, bingoSubmissions.weddingId),
+            ),
+          )
+          .innerJoin(
+            media,
+            and(
+              eq(media.id, bingoSubmissions.mediaId),
+              eq(media.weddingId, bingoSubmissions.weddingId),
+            ),
+          )
+          .where(
+            bingoSubmissionWhere(
+              isNull(bingoSubmissions.withdrawnAt),
+              inArray(bingoSubmissions.status, ['pending', 'accepted']),
+              eq(media.status, 'ready'),
+            ),
+          )
+          .orderBy(asc(bingoTasks.position), asc(media.createdAt));
       },
     },
 

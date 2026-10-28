@@ -8,6 +8,7 @@ export type LiveEvent =
   | { type: 'media.ready'; item: GalleryItem }
   | { type: 'media.removed'; id: string }
   | { type: 'music.changed' }
+  | { type: 'bingo.changed' }
   | { type: 'resync' };
 
 type Listener = (event: LiveEvent) => void;
@@ -103,8 +104,8 @@ class RealtimeHub {
     const room = this.rooms.get(event.weddingId);
     if (!room) return;
 
-    if (event.type === 'music.changed') {
-      for (const l of room.listeners) l({ type: 'music.changed' });
+    if (event.type === 'music.changed' || event.type === 'bingo.changed') {
+      for (const l of room.listeners) l({ type: event.type });
       return;
     }
 

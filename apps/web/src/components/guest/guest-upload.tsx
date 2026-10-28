@@ -13,10 +13,15 @@ import {
 } from 'react';
 import { Button } from '@/components/ui/button';
 import { UPLOAD_NOTICE_DISMISS_MS, isSameSuccessBatch, uploadNoticePhase } from './upload-notice';
-import { useUploadQueue, type UploadLimits, type UploadTask } from './use-upload-queue';
+import {
+  useUploadQueue,
+  type UploadContext,
+  type UploadLimits,
+  type UploadTask,
+} from './use-upload-queue';
 
 type GuestUploadValue = {
-  add: (list: FileList | File[]) => void;
+  add: (list: FileList | File[], context?: UploadContext) => void;
   mine: Set<string>;
   removeMine: (id: string) => void;
 };
@@ -113,7 +118,7 @@ export function GuestUploadProvider({
   const queue = useUploadQueue(slug, limits, my.add);
   const [showQueue, setShowQueue] = useState(true);
   const pathname = usePathname();
-  const onMusic = pathname.endsWith('/music');
+  const onSection = pathname.endsWith('/music') || pathname.endsWith('/bingo');
   const barVisible = queue.tasks.length > 0 && showQueue;
   const done = queue.tasks.filter((t) => t.status === 'done').length;
   const tasks = queue.tasks;
@@ -133,8 +138,8 @@ export function GuestUploadProvider({
   }, [tasks, clearFinished]);
 
   const add = useCallback(
-    (list: FileList | File[]) => {
-      queue.add(list);
+    (list: FileList | File[], context?: UploadContext) => {
+      queue.add(list, context);
       setShowQueue(true);
     },
     [queue],
@@ -142,11 +147,11 @@ export function GuestUploadProvider({
 
   return (
     <GuestUploadContext.Provider value={{ add, mine: my.mine, removeMine: my.remove }}>
-      <div className={barVisible && onMusic ? 'pb-64' : undefined}>{children}</div>
+      <div className={barVisible && onSection ? 'pb-64' : undefined}>{children}</div>
       {barVisible && (
         <section
           className={
-            onMusic
+            onSection
               ? 'fixed inset-x-0 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-30 mx-auto max-w-md px-3'
               : 'fixed inset-x-0 bottom-24 z-30 mx-auto max-w-md px-3'
           }
