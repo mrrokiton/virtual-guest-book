@@ -320,12 +320,24 @@ export const bingoSubmissions = pgTable(
   },
   (t) => [
     uniqueIndex('bingo_submissions_media_idx').on(t.mediaId),
-    uniqueIndex('bingo_submissions_active_idx')
-      .on(t.weddingId, t.taskId, t.guestSessionId)
-      .where(sql`${t.withdrawnAt} is null`),
     index('bingo_submissions_queue_idx').on(t.weddingId, t.status, t.createdAt.desc()),
     index('bingo_submissions_guest_idx').on(t.weddingId, t.guestSessionId),
   ],
+);
+
+export const bingoProgress = pgTable(
+  'bingo_progress',
+  {
+    weddingId: uuid('wedding_id')
+      .notNull()
+      .references(() => weddings.id, { onDelete: 'cascade' }),
+    guestSessionId: uuid('guest_session_id')
+      .notNull()
+      .references(() => guestSessions.id, { onDelete: 'cascade' }),
+    photosCompletedAt: timestamp('photos_completed_at', { withTimezone: true, precision: 3 }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.weddingId, t.guestSessionId] })],
 );
 
 /** Feature switch per wedding for future modules (song requests, voting, ...). */

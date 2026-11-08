@@ -3,15 +3,13 @@ import {
   DomainError,
   guestCanUpload,
   kindForContentType,
-  mediaPurgeRequest,
   mediaStorageKey,
   planLimits,
   VIDEO_DURATION_TOLERANCE_S,
 } from '@vgb/core';
-import { hitRateLimit, publishBingoChanged, publishMediaEvent, weddingScope } from '@vgb/db';
+import { hitRateLimit, publishBingoChanged, weddingScope } from '@vgb/db';
 import { z } from 'zod';
 import { resolveGuest } from '@/lib/guest';
-import { enqueue } from '@/lib/jobs';
 import { crossOriginResponse, domainErrorResponse, jsonError, readJson } from '@/lib/request';
 import { db, storage, video } from '@/lib/server';
 
@@ -32,7 +30,6 @@ const body = z.object({
   /** Media id from an earlier attempt for the same file; its slot is reused if still open. */
   retryOf: z.uuid().optional(),
   bingoTaskId: z.uuid().optional(),
-  replaceSubmissionId: z.uuid().optional(),
 });
 
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
@@ -47,8 +44,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 
     const parsed = body.safeParse(await readJson(req));
     if (!parsed.success) return jsonError(400, 'Nieprawidłowe dane pliku.');
-    const { contentType, size, durationSeconds, retryOf, bingoTaskId, replaceSubmissionId } =
-      parsed.data;
+    const { contentType, size, durationSeconds, retryOf, bingoTaskId } = parsed.data;
 
     const kind = kindForContentType(contentType);
     if (!kind) throw new DomainError('unsupported_media', 'Ten format pliku nie jest obsługiwany.');
@@ -128,7 +124,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
         ? await scope.bingo.createUpload({
             taskId: bingoTaskId,
             guestSessionId: session.id,
-            replaceSubmissionId,
             media: newMedia,
           })
         : null;
@@ -138,17 +133,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
         ? bingoUpload?.media
         : await scope.media.create(newMedia);
     if (!media) return jsonError(409, 'Ten plik jest już przetwarzany.');
-    if (bingoTaskId) {
-      await publishBingoChanged(db(), wedding.id);
-      if (bingoUpload?.replacedMediaId) {
-        await publishMediaEvent(db(), {
-          type: 'media.removed',
-          weddingId: wedding.id,
-          mediaId: bingoUpload.replacedMediaId,
-        });
-        await enqueue(...mediaPurgeRequest(wedding.id, bingoUpload.replacedMediaId));
-      }
-    }
+    if (bingoTaskId) await publishBingoChanged(db(), wedding.id);
 
     if (kind === 'photo') {
       const key = mediaStorageKey(wedding.id, media.id, 'upload');

@@ -37,7 +37,6 @@ export interface UploadTask {
 
 export interface UploadContext {
   bingoTaskId?: string;
-  replaceSubmissionId?: string;
 }
 
 const MB = 1024 * 1024;

@@ -1,4 +1,4 @@
-import { bingoProgress, roleCan } from '@vgb/core';
+import { compareBingoParticipants, evaluateBingo, roleCan, type BingoPhotoState } from '@vgb/core';
 import { weddingScope } from '@vgb/db';
 import Link from 'next/link';
 import { ActionForm, SubmitButton } from '@/components/action-form';
@@ -9,28 +9,85 @@ import { requireWeddingAccess } from '@/lib/session';
 import { db } from '@/lib/server';
 import { formatDate } from '@/lib/utils';
 import { verifyBingoSubmissionAction } from './actions';
+import { GuestFilter } from './guest-filter';
 
 const STATUS_LABELS = {
   incomplete: 'Nieukończone',
   awaiting_verification: 'Oczekuje na weryfikację',
   needs_correction: 'Wymaga poprawek',
-  completed: 'Ukończone',
+  completed: 'Bingo zaakceptowane',
 } as const;
 
-export default async function BingoAdminPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function BingoAdminPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ guest?: string }>;
+}) {
   const { id } = await params;
+  const { guest } = await searchParams;
   const { wedding, role } = await requireWeddingAccess(id, 'wedding.view');
   const scope = weddingScope(db(), wedding.id);
-  const [tasks, submissions] = await Promise.all([
+  const [tasks, submissions, progress] = await Promise.all([
     scope.bingo.tasks.list(),
     scope.bingo.adminSubmissions(),
+    scope.bingo.progress(),
   ]);
+  const taskIds = tasks.map((task) => task.id);
+  const completedAt = new Map(
+    progress.map((row) => [row.guestSessionId, row.photosCompletedAt] as const),
+  );
   const grouped = new Map<string, typeof submissions>();
   for (const row of submissions) {
     const list = grouped.get(row.submission.guestSessionId) ?? [];
     list.push(row);
     grouped.set(row.submission.guestSessionId, list);
   }
+
+  const participants = [...grouped.entries()]
+    .map(([sessionId, rows]) => {
+      const photos: BingoPhotoState[] = rows.map((row) => ({
+        taskId: row.submission.taskId,
+        status: row.submission.status,
+        mediaStatus: row.media.status,
+        withdrawn: false,
+      }));
+      const stored = completedAt.get(sessionId) ?? null;
+      const evaluation = evaluateBingo({
+        taskIds,
+        photos,
+        previousCompletedAt: stored,
+        now: stored ?? new Date(0),
+      });
+      const name = rows[0]?.guestName || 'Gość';
+      return {
+        sessionId,
+        name,
+        label: `${name} · ${sessionId.slice(0, 8)}`,
+        rows,
+        evaluation,
+        completedAt: evaluation.photosComplete ? stored : null,
+      };
+    })
+    .sort((a, b) =>
+      compareBingoParticipants(
+        {
+          name: a.name,
+          tasksWithQualifying: a.evaluation.tasksWithQualifying,
+          photosCompletedAt: a.completedAt,
+        },
+        {
+          name: b.name,
+          tasksWithQualifying: b.evaluation.tasksWithQualifying,
+          photosCompletedAt: b.completedAt,
+        },
+      ),
+    );
+  const selected = participants.some((person) => person.sessionId === guest) ? (guest ?? '') : '';
+  const visible = selected
+    ? participants.filter((person) => person.sessionId === selected)
+    : participants;
 
   return (
     <div className="space-y-6">
@@ -47,71 +104,94 @@ export default async function BingoAdminPage({ params }: { params: Promise<{ id:
         </Link>
       </div>
 
-      <section>
-        <h3 className="mb-3 text-lg font-semibold">Zgłoszenia</h3>
-        <div className="grid gap-4 md:grid-cols-2">
-          {submissions.map(({ submission, task, media, guestName }) => (
-            <Card key={submission.id}>
-              <img
-                src={`/api/w/${wedding.slug}/media/${media.id}/file?v=large`}
-                alt=""
-                className="mb-3 aspect-video w-full rounded-lg bg-muted object-cover"
-              />
-              <CardTitle>{task.body}</CardTitle>
-              <p className="text-sm">
-                {guestName || 'Gość'} · {submission.guestSessionId.slice(0, 8)}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {formatDate(submission.submittedAt ?? submission.createdAt, true)}
-              </p>
-              <div className="mt-2">
-                <Badge
-                  tone={
-                    submission.status === 'accepted'
-                      ? 'success'
-                      : submission.status === 'rejected'
-                        ? 'danger'
-                        : 'warning'
-                  }
-                >
-                  {submission.status === 'accepted'
-                    ? 'Zaakceptowane'
-                    : submission.status === 'rejected'
-                      ? 'Odrzucone'
-                      : 'Oczekuje'}
-                </Badge>
-              </div>
-              {submission.rejectionReason ? (
-                <p className="mt-2 text-sm text-danger-foreground">{submission.rejectionReason}</p>
-              ) : null}
-              {roleCan(role, 'bingo.verify') ? (
-                <div className="mt-4 space-y-2">
-                  <ActionForm action={verifyBingoSubmissionAction}>
-                    <input type="hidden" name="weddingId" value={wedding.id} />
-                    <input type="hidden" name="submissionId" value={submission.id} />
-                    <input type="hidden" name="status" value="accepted" />
-                    <SubmitButton size="sm">Akceptuj</SubmitButton>
-                  </ActionForm>
-                  <ActionForm action={verifyBingoSubmissionAction} className="flex gap-2">
-                    <input type="hidden" name="weddingId" value={wedding.id} />
-                    <input type="hidden" name="submissionId" value={submission.id} />
-                    <input type="hidden" name="status" value="rejected" />
-                    <Input
-                      name="rejectionReason"
-                      required
-                      maxLength={300}
-                      placeholder="Powód odrzucenia"
-                    />
-                    <SubmitButton size="sm" variant="outline">
-                      Odrzuć
-                    </SubmitButton>
-                  </ActionForm>
-                </div>
-              ) : null}
-            </Card>
-          ))}
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <h3 className="text-lg font-semibold">Zgłoszenia</h3>
+          <GuestFilter
+            guests={participants.map((person) => ({ id: person.sessionId, label: person.label }))}
+            selected={selected}
+          />
         </div>
-        {!submissions.length ? (
+        {visible.map((person) => {
+          const ready = person.rows.filter((row) => row.media.status === 'ready');
+          return (
+            <div key={person.sessionId} className="space-y-3">
+              <h4 className="font-medium">{person.label}</h4>
+              {ready.length ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {ready.map(({ submission, task, media }) => (
+                    <Card key={submission.id}>
+                      <img
+                        src={`/api/w/${wedding.slug}/media/${media.id}/file?v=large`}
+                        alt=""
+                        className="mb-3 aspect-video w-full rounded-lg bg-muted object-cover"
+                      />
+                      <CardTitle>{task.body}</CardTitle>
+                      <p className="text-xs text-muted-foreground">
+                        {formatDate(submission.submittedAt ?? submission.createdAt, true)}
+                      </p>
+                      <div className="mt-2">
+                        <Badge
+                          tone={
+                            submission.status === 'accepted'
+                              ? 'success'
+                              : submission.status === 'rejected'
+                                ? 'danger'
+                                : 'warning'
+                          }
+                        >
+                          {submission.status === 'accepted'
+                            ? 'Zaakceptowane'
+                            : submission.status === 'rejected'
+                              ? 'Odrzucone'
+                              : 'Oczekuje'}
+                        </Badge>
+                      </div>
+                      {submission.rejectionReason ? (
+                        <p className="mt-2 text-sm text-danger-foreground">
+                          {submission.rejectionReason}
+                        </p>
+                      ) : null}
+                      {roleCan(role, 'bingo.verify') ? (
+                        <div className="mt-4 space-y-2">
+                          <ActionForm notify="toast" action={verifyBingoSubmissionAction}>
+                            <input type="hidden" name="weddingId" value={wedding.id} />
+                            <input type="hidden" name="submissionId" value={submission.id} />
+                            <input type="hidden" name="status" value="accepted" />
+                            <SubmitButton size="sm">Akceptuj</SubmitButton>
+                          </ActionForm>
+                          <ActionForm
+                            notify="toast"
+                            action={verifyBingoSubmissionAction}
+                            className="flex gap-2"
+                          >
+                            <input type="hidden" name="weddingId" value={wedding.id} />
+                            <input type="hidden" name="submissionId" value={submission.id} />
+                            <input type="hidden" name="status" value="rejected" />
+                            <Input
+                              name="rejectionReason"
+                              required
+                              maxLength={300}
+                              placeholder="Powód odrzucenia"
+                            />
+                            <SubmitButton size="sm" variant="outline">
+                              Odrzuć
+                            </SubmitButton>
+                          </ActionForm>
+                        </div>
+                      ) : null}
+                    </Card>
+                  ))}
+                </div>
+              ) : (
+                <Card className="text-center text-sm text-muted-foreground">
+                  Brak gotowych zgłoszeń do weryfikacji.
+                </Card>
+              )}
+            </div>
+          );
+        })}
+        {!visible.length ? (
           <Card className="text-center text-sm text-muted-foreground">
             Brak gotowych zgłoszeń do weryfikacji.
           </Card>
@@ -121,43 +201,38 @@ export default async function BingoAdminPage({ params }: { params: Promise<{ id:
       <section>
         <h3 className="mb-3 text-lg font-semibold">Podsumowanie uczestników</h3>
         <div className="space-y-3">
-          {[...grouped.entries()].map(([sessionId, rows]) => {
-            const accepted = rows.filter((row) => row.submission.status === 'accepted').length;
-            const pending = rows.filter((row) => row.submission.status === 'pending').length;
-            const rejected = rows.filter((row) => row.submission.status === 'rejected').length;
-            const state = bingoProgress({
-              taskCount: tasks.length,
-              submittedCount: rows.length,
-              acceptedCount: accepted,
-              pendingCount: pending,
-              rejectedCount: rejected,
-            });
-            return (
-              <Card key={sessionId} className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="font-medium">
-                    {rows[0]?.guestName || 'Gość'} · {sessionId.slice(0, 8)}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    zdjęcia {rows.length}/{tasks.length} · zaakceptowane {accepted} · oczekujące{' '}
-                    {pending} · odrzucone {rejected}
-                  </p>
-                </div>
-                <Badge
-                  tone={
-                    state === 'completed'
-                      ? 'success'
-                      : state === 'needs_correction'
-                        ? 'danger'
-                        : 'warning'
-                  }
-                >
-                  {STATUS_LABELS[state]}
-                </Badge>
-              </Card>
-            );
-          })}
-          {!grouped.size ? (
+          {participants.map((person) => (
+            <Card
+              key={person.sessionId}
+              className="flex flex-wrap items-center justify-between gap-3"
+            >
+              <div>
+                <p className="font-medium">{person.label}</p>
+                <p className="text-sm text-muted-foreground">
+                  zadania {person.evaluation.tasksWithQualifying}/{tasks.length} · zaakceptowane{' '}
+                  {person.evaluation.acceptedCount} · oczekujące {person.evaluation.pendingCount} ·
+                  odrzucone {person.evaluation.rejectedWithoutReplacement}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {person.completedAt
+                    ? `Komplet zdjęć: ${formatDate(person.completedAt, true)}`
+                    : 'Komplet zdjęć nie został jeszcze dodany'}
+                </p>
+              </div>
+              <Badge
+                tone={
+                  person.evaluation.status === 'completed'
+                    ? 'success'
+                    : person.evaluation.status === 'needs_correction'
+                      ? 'danger'
+                      : 'warning'
+                }
+              >
+                {STATUS_LABELS[person.evaluation.status]}
+              </Badge>
+            </Card>
+          ))}
+          {!participants.length ? (
             <Card className="text-center text-sm text-muted-foreground">
               Nikt jeszcze nie rozpoczął Bingo.
             </Card>

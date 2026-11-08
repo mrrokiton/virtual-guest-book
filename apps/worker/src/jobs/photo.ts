@@ -6,7 +6,7 @@ import {
   type PhotoProcessJob,
   type PhotoVariant,
 } from '@vgb/core';
-import { publishMediaEvent, weddingScope } from '@vgb/db';
+import { publishBingoChanged, publishMediaEvent, weddingScope } from '@vgb/db';
 import { ObjectTooLargeError } from '@vgb/services';
 import heicConvert from 'heic-convert';
 import sharp from 'sharp';
@@ -143,6 +143,15 @@ export async function encodeVariants(original: Buffer): Promise<Encoded[] | null
 export async function processPhoto(ctx: Context, job: PhotoProcessJob): Promise<void> {
   const scope = weddingScope(ctx.db, job.weddingId);
   const media = await scope.media.get(job.mediaId);
+  if (media?.status === 'ready' && media.kind === 'photo') {
+    await syncBingoProgress(scope, ctx, job.weddingId, media.id);
+    await publishMediaEvent(ctx.db, {
+      type: 'media.ready',
+      weddingId: job.weddingId,
+      mediaId: media.id,
+    });
+    return;
+  }
   if (!media || media.status !== 'processing' || media.kind !== 'photo' || !media.originalKey)
     return;
   const originalKey = media.originalKey;
@@ -201,9 +210,22 @@ export async function processPhoto(ctx: Context, job: PhotoProcessJob): Promise<
     return;
   }
   await ctx.storage.delete(originalKey);
+  await syncBingoProgress(scope, ctx, job.weddingId, media.id);
   await publishMediaEvent(ctx.db, {
     type: 'media.ready',
     weddingId: job.weddingId,
     mediaId: media.id,
   });
+}
+
+async function syncBingoProgress(
+  scope: ReturnType<typeof weddingScope>,
+  ctx: Context,
+  weddingId: string,
+  mediaId: string,
+) {
+  const linked = await scope.bingo.getSubmissionByMedia(mediaId);
+  if (!linked || linked.withdrawnAt) return;
+  await scope.bingo.syncProgress(linked.guestSessionId, ctx.now());
+  await publishBingoChanged(ctx.db, weddingId);
 }

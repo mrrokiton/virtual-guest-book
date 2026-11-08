@@ -143,9 +143,9 @@ Fair queue off: open rows follow `created_at`. Fair queue on: the first 3 open r
 
 Off unless `wedding_modules.module_key = party_bingo` is enabled. Configuration is on `/dashboard/weddings/[id]/bingo/settings`; tasks and the text-only validator list are scoped to one wedding. Owner and co-admin manage and verify Bingo through existing Better Auth membership. Platform admins retain no access to wedding media.
 
-Guests use `/w/[slug]/bingo` through the existing signed guest session. A display name is required before the first submission. Each active `(task, guest session)` has at most one non-withdrawn submission. Uploads reuse `media` and the photo worker but are excluded from the ordinary gallery and media moderation list. Replacing or deleting a submission marks the old media deleted, withdraws the submission, and resets verification. Progress is derived from active tasks and current submissions; rejected takes precedence over incomplete.
+Guests use `/w/[slug]/bingo` through the existing signed guest session. A display name is required before the first submission. A task can have several current photos for the same guest session. A qualifying photo is `ready`, not withdrawn, and `pending` or `accepted`. The photo set is complete when every active task has one. Bingo is accepted when every active task has an accepted photo. One rejection does not undo a task that still has another qualifying photo. `bingo_progress.photos_completed_at` stores the first transition into that photo set and is cleared when the set becomes incomplete. Acceptance does not move it. Uploads reuse `media` and the photo worker but are excluded from the ordinary gallery and media moderation list. Deleting a photo withdraws that submission only.
 
-`bingo.changed` causes the guest page to refetch; `media.ready` covers completion by the photo worker. ZIP export streams pending and accepted Bingo photos under collision-proof `Bingo/<task>/` folders without copying storage objects. Rejected, withdrawn, failed, processing, and deleted attempts are excluded.
+`bingo.changed` causes the guest page to refetch; `media.ready` covers completion by the photo worker, which also recalculates the stored completion time. ZIP export streams every pending and accepted ready Bingo photo under collision-proof `Bingo/<task>/` folders without copying storage objects. Rejected, withdrawn, failed, processing, and deleted attempts are excluded.
 
 ### Lifecycle
 
@@ -208,7 +208,7 @@ All under `/api/w/[slug]`. Slug must match `^[a-z2-7]{24}$`.
 | `DELETE /music/[id]`               | Author of the row                                       | 204 soft delete. 404 for someone else's row                                                                                                                                           |
 | `POST /music/[id]/status`          | DJ session only                                         | Body `{ status: open\|played\|skipped }`. 403 for a normal guest                                                                                                                      |
 | `POST /dj`                         | Public, like PIN                                        | Body `{ token, displayName?, acceptTerms: true }`. Sets the guest cookie on a `dj` session                                                                                            |
-| `GET /bingo`                       | Guest cookie, module enabled                            | Personal tasks, current submissions, validator list, display name, and mutation availability. 404 if the module is off                                                                |
+| `GET /bingo`                       | Guest cookie, module enabled                            | Personal tasks, each with its current photos, validator list, display name, and mutation availability. 404 if the module is off                                                       |
 | `POST /bingo/profile`              | Guest cookie                                            | Sets the non-empty display name required before a Bingo submission                                                                                                                    |
 
 PIN limits (`session/route.ts`): 10 failures per device per wedding, then 15-minute lock from the last failure; 300 failures per wedding per 15 minutes; 100 successful new sessions per IP per wedding per 15 minutes. IP is HMAC'd (`ipKey`) and not stored raw. Upload limit: 150 starts per guest session per 10 minutes. Photo PUT URLs last 5 minutes. Local-video PUT URLs use the storage default of 15 minutes.
@@ -259,7 +259,7 @@ Platform actions in `apps/web/src/app/admin/actions.ts`: `approveWeddingAction`,
 
 ## Database schema
 
-Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migrations: `0000_init`, `0001_wedding_approval`, `0002_export_size_bigint`, `0003_reprocess_attempts_notified_at`, `0004_music_suggestions`, `0005_loud_peter_parker`.
+Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migrations: `0000_init`, `0001_wedding_approval`, `0002_export_size_bigint`, `0003_reprocess_attempts_notified_at`, `0004_music_suggestions`, `0005_loud_peter_parker`, `0006_dazzling_power_man`.
 
 ### Better Auth tables
 
@@ -267,25 +267,26 @@ Source of truth: `packages/db/src/schema/app.ts` and `auth.ts`. Applied migratio
 
 ### App tables
 
-| Table               | Role                                                                                                                                        |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `platform_admins`   | PK `user_id` → `user.id`                                                                                                                    |
-| `tenants`           | Paying customer. Weddings belong to one tenant (`ON DELETE RESTRICT`)                                                                       |
-| `tenant_members`    | PK `(tenant_id, user_id)`, role typed as `owner`                                                                                            |
-| `weddings`          | Unique `slug`. Status, schedule timestamps, encrypted PIN, theme JSON, approval, block                                                      |
-| `wedding_members`   | PK `(wedding_id, user_id)`, role `owner` or `co_admin`                                                                                      |
-| `wedding_invites`   | Token hash unique. `accepted_at`, `revoked_at`, `expires_at`                                                                                |
-| `guest_sessions`    | Optional `display_name`, `role` `guest` or `dj`, optional `dj_link_id`, `terms_accepted_at`, `revoked_at`                                   |
-| `wedding_dj_links`  | SHA-256 `token_hash`, optional label, `revoked_at`. Raw token is not stored                                                                 |
-| `music_suggestions` | `kind` `track` or `genre`, `body`, `body_key`, status `open`/`played`/`skipped`, `queue_rank`, `author_name`, `details` jsonb, `deleted_at` |
-| `media`             | One file. See statuses below. Partial unique index on `video_uid`                                                                           |
-| `bingo_tasks`       | Stable, ordered task UUIDs per wedding. Used tasks are archived instead of deleted                                                          |
-| `bingo_validators`  | Text-only names and optional nicknames shown after all required photos are present                                                          |
-| `bingo_submissions` | Task/session/media association, verification status, verifier metadata, and withdrawal timestamp                                            |
-| `wedding_modules`   | PK `(wedding_id, module_key)`. Flags for `music_requests` and `party_bingo`                                                                 |
-| `exports`           | ZIP job row. `size_bytes` is bigint. `notified_at` added in `0003`                                                                          |
-| `audit_log`         | `bigserial` id. `wedding_id` is not a foreign key                                                                                           |
-| `rate_limits`       | PK `key`, `count`, `reset_at`                                                                                                               |
+| Table               | Role                                                                                                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `platform_admins`   | PK `user_id` → `user.id`                                                                                                                                  |
+| `tenants`           | Paying customer. Weddings belong to one tenant (`ON DELETE RESTRICT`)                                                                                     |
+| `tenant_members`    | PK `(tenant_id, user_id)`, role typed as `owner`                                                                                                          |
+| `weddings`          | Unique `slug`. Status, schedule timestamps, encrypted PIN, theme JSON, approval, block                                                                    |
+| `wedding_members`   | PK `(wedding_id, user_id)`, role `owner` or `co_admin`                                                                                                    |
+| `wedding_invites`   | Token hash unique. `accepted_at`, `revoked_at`, `expires_at`                                                                                              |
+| `guest_sessions`    | Optional `display_name`, `role` `guest` or `dj`, optional `dj_link_id`, `terms_accepted_at`, `revoked_at`                                                 |
+| `wedding_dj_links`  | SHA-256 `token_hash`, optional label, `revoked_at`. Raw token is not stored                                                                               |
+| `music_suggestions` | `kind` `track` or `genre`, `body`, `body_key`, status `open`/`played`/`skipped`, `queue_rank`, `author_name`, `details` jsonb, `deleted_at`               |
+| `media`             | One file. See statuses below. Partial unique index on `video_uid`                                                                                         |
+| `bingo_tasks`       | Stable, ordered task UUIDs per wedding. Used tasks are archived instead of deleted                                                                        |
+| `bingo_validators`  | Text-only names and optional nicknames shown after all required photos are present                                                                        |
+| `bingo_submissions` | Task/session/media association. Several current photos per task and session are allowed. Verification status, verifier metadata, and withdrawal timestamp |
+| `bingo_progress`    | PK `(wedding_id, guest_session_id)`. `photos_completed_at` is the photo-set completion time, or null when the set is incomplete                           |
+| `wedding_modules`   | PK `(wedding_id, module_key)`. Flags for `music_requests` and `party_bingo`                                                                               |
+| `exports`           | ZIP job row. `size_bytes` is bigint. `notified_at` added in `0003`                                                                                        |
+| `audit_log`         | `bigserial` id. `wedding_id` is not a foreign key                                                                                                         |
+| `rate_limits`       | PK `key`, `count`, `reset_at`                                                                                                                             |
 
 `pgboss` schema is created by pg-boss, not by Drizzle.
 

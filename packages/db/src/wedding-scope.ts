@@ -16,6 +16,7 @@ import {
 import {
   disableFairQueue,
   enableFairQueue,
+  evaluateBingo,
   insertMusicSuggestion,
   type GuestSessionRole,
   type MusicAuthorLoad,
@@ -28,6 +29,7 @@ import type { Database } from './client';
 import { decodeCursor, encodeCursor } from './cursor';
 import {
   auditLog,
+  bingoProgress,
   bingoSubmissions,
   bingoTasks,
   bingoValidators,
@@ -120,6 +122,71 @@ export function weddingScope(db: Database, weddingId: string) {
     select 1 from ${bingoSubmissions}
     where ${bingoSubmissions.mediaId} = ${media.id}
   )`;
+
+  async function syncProgressOn(tx: Database, guestSessionId: string, now: Date) {
+    await tx.insert(bingoProgress).values({ weddingId, guestSessionId }).onConflictDoNothing();
+    const [locked] = await tx
+      .select()
+      .from(bingoProgress)
+      .where(
+        and(
+          eq(bingoProgress.weddingId, weddingId),
+          eq(bingoProgress.guestSessionId, guestSessionId),
+        ),
+      )
+      .limit(1)
+      .for('update');
+    const tasks = await tx
+      .select({ id: bingoTasks.id })
+      .from(bingoTasks)
+      .where(and(eq(bingoTasks.weddingId, weddingId), isNull(bingoTasks.archivedAt)));
+    const photos = await tx
+      .select({
+        taskId: bingoSubmissions.taskId,
+        status: bingoSubmissions.status,
+        withdrawnAt: bingoSubmissions.withdrawnAt,
+        mediaStatus: media.status,
+      })
+      .from(bingoSubmissions)
+      .innerJoin(media, and(eq(media.id, bingoSubmissions.mediaId), eq(media.weddingId, weddingId)))
+      .where(
+        and(
+          eq(bingoSubmissions.weddingId, weddingId),
+          eq(bingoSubmissions.guestSessionId, guestSessionId),
+        ),
+      );
+    const evaluation = evaluateBingo({
+      taskIds: tasks.map((task) => task.id),
+      photos: photos.map((row) => ({
+        taskId: row.taskId,
+        status: row.status,
+        mediaStatus: row.mediaStatus,
+        withdrawn: row.withdrawnAt != null,
+      })),
+      previousCompletedAt: locked?.photosCompletedAt ?? null,
+      now,
+    });
+    if (locked) {
+      await tx
+        .update(bingoProgress)
+        .set({ photosCompletedAt: evaluation.photosCompletedAt, updatedAt: now })
+        .where(
+          and(
+            eq(bingoProgress.weddingId, weddingId),
+            eq(bingoProgress.guestSessionId, guestSessionId),
+          ),
+        );
+    }
+    return evaluation;
+  }
+
+  async function syncAllProgressOn(tx: Database, now: Date) {
+    const sessions = await tx
+      .selectDistinct({ id: bingoSubmissions.guestSessionId })
+      .from(bingoSubmissions)
+      .where(eq(bingoSubmissions.weddingId, weddingId));
+    for (const session of sessions) await syncProgressOn(tx, session.id, now);
+  }
 
   async function mediaPage(
     where: SQL | undefined,
@@ -559,15 +626,19 @@ export function weddingScope(db: Database, weddingId: string) {
         },
 
         async create(body: string) {
-          const [position] = await db
-            .select({ next: sql<number>`coalesce(max(${bingoTasks.position}), -1) + 1` })
-            .from(bingoTasks)
-            .where(bingoTaskWhere(isNull(bingoTasks.archivedAt)));
-          const [row] = await db
-            .insert(bingoTasks)
-            .values({ weddingId, body, position: Number(position?.next ?? 0) })
-            .returning();
-          return row!;
+          return db.transaction(async (tx) => {
+            const trx = tx as unknown as Database;
+            const [position] = await trx
+              .select({ next: sql<number>`coalesce(max(${bingoTasks.position}), -1) + 1` })
+              .from(bingoTasks)
+              .where(bingoTaskWhere(isNull(bingoTasks.archivedAt)));
+            const [row] = await trx
+              .insert(bingoTasks)
+              .values({ weddingId, body, position: Number(position?.next ?? 0) })
+              .returning();
+            await syncAllProgressOn(trx, new Date());
+            return row!;
+          });
         },
 
         async update(id: string, body: string) {
@@ -616,12 +687,14 @@ export function weddingScope(db: Database, weddingId: string) {
                   ),
                 )
                 .returning();
+              if (row) await syncAllProgressOn(tx as unknown as Database, new Date());
               return row ? 'archived' : null;
             }
             const [row] = await tx
               .delete(bingoTasks)
               .where(and(eq(bingoTasks.weddingId, weddingId), eq(bingoTasks.id, id)))
               .returning();
+            if (row) await syncAllProgressOn(tx as unknown as Database, new Date());
             return row ? 'deleted' : null;
           });
         },
@@ -666,14 +739,8 @@ export function weddingScope(db: Database, weddingId: string) {
         },
       },
 
-      async createUpload(values: {
-        taskId: string;
-        guestSessionId: string;
-        replaceSubmissionId?: string | null;
-        media: NewMedia;
-      }) {
+      async createUpload(values: { taskId: string; guestSessionId: string; media: NewMedia }) {
         return db.transaction(async (tx) => {
-          let replacedMediaId: string | null = null;
           const [task] = await tx
             .select({ id: bingoTasks.id })
             .from(bingoTasks)
@@ -698,28 +765,6 @@ export function weddingScope(db: Database, weddingId: string) {
             .limit(1);
           if (!task || !session) return null;
 
-          if (values.replaceSubmissionId) {
-            const [old] = await tx
-              .update(bingoSubmissions)
-              .set({ withdrawnAt: new Date() })
-              .where(
-                and(
-                  eq(bingoSubmissions.weddingId, weddingId),
-                  eq(bingoSubmissions.id, values.replaceSubmissionId),
-                  eq(bingoSubmissions.taskId, values.taskId),
-                  eq(bingoSubmissions.guestSessionId, values.guestSessionId),
-                  isNull(bingoSubmissions.withdrawnAt),
-                ),
-              )
-              .returning({ mediaId: bingoSubmissions.mediaId });
-            if (!old) return null;
-            replacedMediaId = old.mediaId;
-            await tx
-              .update(media)
-              .set({ status: 'deleted', deletedAt: new Date() })
-              .where(and(eq(media.weddingId, weddingId), eq(media.id, old.mediaId)));
-          }
-
           const [createdMedia] = await tx
             .insert(media)
             .values({ ...values.media, weddingId, createdAt: new Date() })
@@ -733,7 +778,8 @@ export function weddingScope(db: Database, weddingId: string) {
               mediaId: createdMedia!.id,
             })
             .returning();
-          return { media: createdMedia!, submission: submission!, replacedMediaId };
+          await syncProgressOn(tx as unknown as Database, values.guestSessionId, new Date());
+          return { media: createdMedia!, submission: submission! };
         });
       },
 
@@ -788,6 +834,7 @@ export function weddingScope(db: Database, weddingId: string) {
             )
             .returning();
           if (!removed) throw new Error('Bingo media could not be withdrawn');
+          await syncProgressOn(tx as unknown as Database, guestSessionId, new Date());
           return { submission, media: removed };
         });
       },
@@ -798,28 +845,43 @@ export function weddingScope(db: Database, weddingId: string) {
         userId: string,
         rejectionReason: string | null,
       ) {
-        const [row] = await db
-          .update(bingoSubmissions)
-          .set({
-            status,
-            rejectionReason: status === 'rejected' ? rejectionReason : null,
-            verifiedAt: new Date(),
-            verifiedByUserId: userId,
-          })
-          .where(
-            bingoSubmissionWhere(
-              eq(bingoSubmissions.id, submissionId),
-              isNull(bingoSubmissions.withdrawnAt),
-              sql`exists (
+        return db.transaction(async (tx) => {
+          const trx = tx as unknown as Database;
+          const [row] = await trx
+            .update(bingoSubmissions)
+            .set({
+              status,
+              rejectionReason: status === 'rejected' ? rejectionReason : null,
+              verifiedAt: new Date(),
+              verifiedByUserId: userId,
+            })
+            .where(
+              bingoSubmissionWhere(
+                eq(bingoSubmissions.id, submissionId),
+                isNull(bingoSubmissions.withdrawnAt),
+                sql`exists (
                 select 1 from ${media}
                 where ${media.id} = ${bingoSubmissions.mediaId}
                   and ${media.weddingId} = ${weddingId}
                   and ${media.status} = 'ready'
               )`,
-            ),
-          )
-          .returning();
-        return row ?? null;
+              ),
+            )
+            .returning();
+          if (!row) return null;
+          await syncProgressOn(trx, row.guestSessionId, new Date());
+          return row;
+        });
+      },
+
+      syncProgress(guestSessionId: string, now = new Date()) {
+        return db.transaction(async (tx) =>
+          syncProgressOn(tx as unknown as Database, guestSessionId, now),
+        );
+      },
+
+      progress() {
+        return db.select().from(bingoProgress).where(eq(bingoProgress.weddingId, weddingId));
       },
 
       guestData(guestSessionId: string) {
@@ -844,7 +906,8 @@ export function weddingScope(db: Database, weddingId: string) {
                 eq(bingoSubmissions.guestSessionId, guestSessionId),
                 isNull(bingoSubmissions.withdrawnAt),
               ),
-            ),
+            )
+            .orderBy(asc(bingoSubmissions.createdAt)),
         ]).then(([tasks, validators, submissions]) => ({ tasks, validators, submissions }));
       },
 
@@ -878,9 +941,7 @@ export function weddingScope(db: Database, weddingId: string) {
               eq(media.weddingId, bingoSubmissions.weddingId),
             ),
           )
-          .where(
-            bingoSubmissionWhere(isNull(bingoSubmissions.withdrawnAt), eq(media.status, 'ready')),
-          )
+          .where(bingoSubmissionWhere(isNull(bingoSubmissions.withdrawnAt)))
           .orderBy(desc(bingoSubmissions.createdAt));
       },
 

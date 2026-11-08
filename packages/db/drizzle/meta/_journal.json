@@ -43,6 +43,13 @@
       "when": 1793210525746,
       "tag": "0005_loud_peter_parker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793217582088,
+      "tag": "0006_dazzling_power_man",
+      "breakpoints": true
     }
   ]
 }

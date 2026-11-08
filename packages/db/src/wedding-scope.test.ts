@@ -286,4 +286,59 @@ describe('party bingo', () => {
     expect(removed?.media.status).toBe('deleted');
     expect((await scope.bingo.guestData(session.id)).submissions).toEqual([]);
   });
+
+  it('keeps several active photos and moves completion time only on a real transition', async () => {
+    const a = await makeWedding('Bingo progress');
+    const b = await makeWedding('Bingo other');
+    const scope = weddingScope(db, a.wedding.id);
+    const other = weddingScope(db, b.wedding.id);
+    const first = await scope.bingo.tasks.create('Para młoda');
+    const second = await scope.bingo.tasks.create('Taniec');
+    const session = await scope.guestSessions.create({ displayName: 'Ola' });
+    const otherSession = await other.guestSessions.create({ displayName: 'Jan' });
+    const create = async (taskId: string, owner = scope, guest = session.id) => {
+      const created = await owner.bingo.createUpload({
+        taskId,
+        guestSessionId: guest,
+        media: { ...photo, status: 'uploading', guestSessionId: guest, uploaderName: 'Ola' },
+      });
+      return created!;
+    };
+    const markReady = (owner: typeof scope, mediaId: string) =>
+      owner.media.update(mediaId, { status: 'ready' }, { from: ['uploading'] });
+
+    const firstPhoto = await create(first.id);
+    const secondPhoto = await create(second.id);
+    const extra = await create(first.id);
+    await markReady(scope, firstPhoto.media.id);
+    await markReady(scope, secondPhoto.media.id);
+    await markReady(scope, extra.media.id);
+    const started = new Date('2026-10-28T19:43:00Z');
+    await scope.bingo.syncProgress(session.id, started);
+    await scope.bingo.syncProgress(session.id, new Date('2026-10-28T19:50:00Z'));
+    const [row] = await scope.bingo.progress();
+    expect(row?.photosCompletedAt).toEqual(started);
+    expect((await scope.bingo.guestData(session.id)).submissions).toHaveLength(3);
+
+    await scope.bingo.verify(extra.submission.id, 'rejected', a.owner.id, 'Za ciemne');
+    expect((await scope.bingo.progress())[0]?.photosCompletedAt).toEqual(started);
+    await scope.bingo.verify(firstPhoto.submission.id, 'accepted', a.owner.id, null);
+    expect((await scope.bingo.progress())[0]?.photosCompletedAt).toEqual(started);
+
+    await scope.bingo.verify(secondPhoto.submission.id, 'rejected', a.owner.id, 'Nie widać pary');
+    expect((await scope.bingo.progress())[0]?.photosCompletedAt).toBeNull();
+
+    await scope.bingo.tasks.remove(second.id);
+    const restored = (await scope.bingo.progress())[0]?.photosCompletedAt;
+    expect(restored).not.toBeNull();
+    await scope.bingo.syncProgress(session.id, new Date('2026-10-28T20:20:00Z'));
+    expect((await scope.bingo.progress())[0]?.photosCompletedAt).toEqual(restored);
+
+    const foreignTask = await other.bingo.tasks.create('Inne wesele');
+    const foreign = await create(foreignTask.id, other, otherSession.id);
+    await markReady(other, foreign.media.id);
+    await other.bingo.syncProgress(otherSession.id, new Date('2026-10-28T21:00:00Z'));
+    expect((await scope.bingo.progress()).map((item) => item.guestSessionId)).toEqual([session.id]);
+    expect(await other.bingo.getSubmissionByMedia(firstPhoto.media.id)).toBeNull();
+  });
 });

@@ -55,7 +55,7 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
         {!editable ? (
           <Alert className="mb-3">W tym stanie nie można zmienić konfiguracji.</Alert>
         ) : null}
-        <ActionForm action={setBingoModuleAction}>
+        <ActionForm notify="toast" action={setBingoModuleAction}>
           <input type="hidden" name="weddingId" value={wedding.id} />
           <input type="hidden" name="enabled" value={enabled ? '' : 'on'} />
           <SubmitButton disabled={!editable} variant={enabled ? 'outline' : 'primary'}>
@@ -67,7 +67,12 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
       <Card>
         <CardTitle>Zadania</CardTitle>
         <CardDescription>Kolejność tutaj jest kolejnością widoczną dla gości.</CardDescription>
-        <ActionForm action={saveBingoTaskAction} resetOnSuccess className="flex gap-2">
+        <ActionForm
+          notify="toast"
+          action={saveBingoTaskAction}
+          resetOnSuccess
+          className="flex gap-2"
+        >
           <input type="hidden" name="weddingId" value={wedding.id} />
           <Input name="body" required maxLength={300} placeholder="Dodaj nowe zadanie" />
           <SubmitButton disabled={!editable}>Dodaj</SubmitButton>
@@ -75,7 +80,11 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
         <ul className="mt-4 divide-y divide-border">
           {tasks.map((task, index) => (
             <li key={task.id} className="space-y-2 py-3">
-              <ActionForm action={saveBingoTaskAction} className="flex flex-col gap-2 sm:flex-row">
+              <ActionForm
+                notify="toast"
+                action={saveBingoTaskAction}
+                className="flex flex-col gap-2 sm:flex-row"
+              >
                 <input type="hidden" name="weddingId" value={wedding.id} />
                 <input type="hidden" name="taskId" value={task.id} />
                 <Input name="body" defaultValue={task.body} required maxLength={300} />
@@ -85,7 +94,7 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
               </ActionForm>
               <div className="flex flex-wrap gap-1">
                 {(['up', 'down'] as const).map((direction) => (
-                  <ActionForm key={direction} action={moveBingoTaskAction}>
+                  <ActionForm notify="toast" key={direction} action={moveBingoTaskAction}>
                     <input type="hidden" name="weddingId" value={wedding.id} />
                     <input type="hidden" name="taskId" value={task.id} />
                     <input type="hidden" name="direction" value={direction} />
@@ -100,7 +109,7 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
                     </SubmitButton>
                   </ActionForm>
                 ))}
-                <ActionForm action={removeBingoTaskAction}>
+                <ActionForm notify="toast" action={removeBingoTaskAction}>
                   <input type="hidden" name="weddingId" value={wedding.id} />
                   <input type="hidden" name="taskId" value={task.id} />
                   <SubmitButton disabled={!editable} variant="ghost" size="sm">
@@ -120,6 +129,7 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
           To prosta lista informacyjna. Te osoby nie otrzymują kont ani dostępu do panelu.
         </CardDescription>
         <ActionForm
+          notify="toast"
           action={saveBingoValidatorAction}
           resetOnSuccess
           className="grid gap-2 sm:grid-cols-3"
@@ -139,6 +149,7 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
           {validators.map((validator) => (
             <li key={validator.id} className="rounded-lg border border-border p-3">
               <ActionForm
+                notify="toast"
                 action={saveBingoValidatorAction}
                 className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]"
               >
@@ -150,7 +161,7 @@ export default async function BingoSettingsPage({ params }: { params: Promise<{ 
                   Zapisz
                 </SubmitButton>
               </ActionForm>
-              <ActionForm action={removeBingoValidatorAction} className="mt-1">
+              <ActionForm notify="toast" action={removeBingoValidatorAction} className="mt-1">
                 <input type="hidden" name="weddingId" value={wedding.id} />
                 <input type="hidden" name="validatorId" value={validator.id} />
                 <SubmitButton disabled={!editable} variant="ghost" size="sm">
