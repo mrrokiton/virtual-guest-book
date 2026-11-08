@@ -46,6 +46,22 @@ const schema = z
       (v) => (v === '' ? undefined : v),
       z.coerce.number().int().min(1).max(65535).default(8081),
     ),
+    /**
+     * Production worker only. After the idle check it exits 0 so Fly leaves the machine stopped
+     * (`restart.policy = on-failure`). Web must hold `FLY_API_TOKEN` before this is turned on.
+     */
+    WORKER_EXIT_WHEN_IDLE: z
+      .preprocess(
+        (v) => (v === undefined || v === '' ? 'false' : v),
+        z.enum(['true', 'false', '1', '0']),
+      )
+      .transform((v) => v === 'true' || v === '1'),
+    /** Deploy token for the worker app. Web uses it to start a stopped machine. */
+    FLY_API_TOKEN: optional,
+    FLY_WORKER_APP: z.preprocess(
+      (v) => (v === '' || v === undefined ? undefined : v),
+      z.string().min(1).default('vgb-worker'),
+    ),
   })
   .superRefine((env, ctx) => {
     if (env.VIDEO_PROVIDER !== 'cloudflare') return;

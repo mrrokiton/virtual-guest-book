@@ -83,6 +83,25 @@ export function fullActivityWindow(w: { eventDate: Date; readOnlyAt: Date }): Ac
   return { from, until: until < from ? from : until };
 }
 
+/** Longest quiet gap before the worker must run lifecycle again. */
+export const WORKER_IDLE_TICK_MS = 60 * 60 * 1000;
+
+/**
+ * When a stopped worker machine has to come back: within an hour, or sooner when a wedding window
+ * opens inside that hour. The caller starts the machine; this only picks the moment.
+ */
+export function nextIdleCheckAt(
+  now: Date,
+  weddings: { eventDate: Date; readOnlyAt: Date }[],
+): Date {
+  let next = now.getTime() + WORKER_IDLE_TICK_MS;
+  for (const w of weddings) {
+    const { from, until } = fullActivityWindow(w);
+    if (until > from && from > now && from.getTime() < next) next = from.getTime();
+  }
+  return new Date(next);
+}
+
 export function isFullyActive(
   w: Pick<WeddingLifecycle, 'status' | 'blockedAt' | 'readOnlyAt'> & { eventDate: Date },
   now: Date,

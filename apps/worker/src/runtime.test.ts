@@ -1,7 +1,13 @@
 import { QUEUES } from '@vgb/core';
 import type { UploadWindow } from '@vgb/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AWAKE_CHECK_MS, MAINTENANCE_MS, SLEEP_TICK_MS, WAKE_HOLD_MS } from './activity';
+import {
+  AWAKE_CHECK_MS,
+  IDLE_EXIT_GRACE_MS,
+  MAINTENANCE_MS,
+  SLEEP_TICK_MS,
+  WAKE_HOLD_MS,
+} from './activity';
 import { WorkerRuntime, type RuntimeDeps } from './runtime';
 
 function fakeBoss(pending: { count: number }) {
@@ -16,7 +22,14 @@ function fakeBoss(pending: { count: number }) {
   };
 }
 
-function setup(opts: { sleepEnabled?: boolean; windows?: UploadWindow[] } = {}) {
+function setup(
+  opts: {
+    sleepEnabled?: boolean;
+    windows?: UploadWindow[];
+    exitWhenIdle?: boolean;
+    onIdleExit?: () => Promise<void>;
+  } = {},
+) {
   const pending = { count: 0 };
   const boss = fakeBoss(pending);
   const runtime = new WorkerRuntime({
@@ -27,6 +40,8 @@ function setup(opts: { sleepEnabled?: boolean; windows?: UploadWindow[] } = {}) 
       { name: QUEUES.lifecycleTick, options: {}, handler: async () => {} },
     ],
     sleepEnabled: opts.sleepEnabled ?? true,
+    exitWhenIdle: opts.exitWhenIdle,
+    onIdleExit: opts.onIdleExit,
     now: () => new Date(),
   });
   return { runtime, boss, pending };
@@ -105,6 +120,31 @@ describe('WorkerRuntime', () => {
     expect(runtime.state).toBe('awake');
     await vi.advanceTimersByTimeAsync(2 * AWAKE_CHECK_MS);
     expect(runtime.state).toBe('asleep');
+    await runtime.stop();
+  });
+
+  it('exits once idle instead of waiting out the hour', async () => {
+    const onIdleExit = vi.fn(async () => {});
+    const { runtime, boss } = setup({ exitWhenIdle: true, onIdleExit });
+    await runtime.start();
+    await vi.advanceTimersByTimeAsync(AWAKE_CHECK_MS + IDLE_EXIT_GRACE_MS);
+    expect(onIdleExit).toHaveBeenCalledOnce();
+    expect(runtime.state).toBe('asleep');
+    boss.send.mockClear();
+    await vi.advanceTimersByTimeAsync(SLEEP_TICK_MS);
+    expect(boss.send).not.toHaveBeenCalled();
+    await runtime.stop();
+  });
+
+  it('stays up when a job arrives during the exit grace', async () => {
+    const onIdleExit = vi.fn(async () => {});
+    const { runtime, pending } = setup({ exitWhenIdle: true, onIdleExit });
+    await runtime.start();
+    await vi.advanceTimersByTimeAsync(AWAKE_CHECK_MS);
+    pending.count = 1;
+    await vi.advanceTimersByTimeAsync(IDLE_EXIT_GRACE_MS);
+    expect(onIdleExit).not.toHaveBeenCalled();
+    expect(runtime.state).toBe('awake');
     await runtime.stop();
   });
 

@@ -105,15 +105,26 @@ async function main() {
   ];
 
   const token = services.cfg.WORKER_WAKE_TOKEN;
+  let wakeServer: Awaited<ReturnType<typeof startWakeServer>> | null = null;
   const runtime = new WorkerRuntime({
     boss,
     listWindows: (now) => listOpenUploadWindows(services.db, now),
     workers,
     sleepEnabled: Boolean(token),
+    exitWhenIdle: services.cfg.WORKER_EXIT_WHEN_IDLE,
+    onIdleExit: async () => {
+      try {
+        wakeServer?.close();
+        await boss.stop({ graceful: true, timeout: 10_000 });
+      } catch (err) {
+        console.error('[worker] idle shutdown failed', err);
+      }
+      process.exit(0);
+    },
     now: services.now,
   });
   await runtime.start();
-  const wakeServer = token
+  wakeServer = token
     ? await startWakeServer({
         port: services.cfg.WORKER_WAKE_PORT,
         token,
@@ -121,7 +132,11 @@ async function main() {
       })
     : null;
 
-  console.info('[worker] started (sleep mode %s)', token ? 'on' : 'off');
+  console.info(
+    '[worker] started (sleep mode %s, exit when idle %s)',
+    token ? 'on' : 'off',
+    services.cfg.WORKER_EXIT_WHEN_IDLE ? 'on' : 'off',
+  );
 
   let stopping = false;
   const shutdown = async (signal: string) => {

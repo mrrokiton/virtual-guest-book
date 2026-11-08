@@ -1,7 +1,13 @@
 import { QUEUES, type QueueName } from '@vgb/core';
 import type { UploadWindow } from '@vgb/db';
 import type { Job, PgBoss, WorkOptions } from 'pg-boss';
-import { AWAKE_CHECK_MS, decideMode, MAINTENANCE_MS, WAKE_HOLD_MS } from './activity';
+import {
+  AWAKE_CHECK_MS,
+  decideMode,
+  IDLE_EXIT_GRACE_MS,
+  MAINTENANCE_MS,
+  WAKE_HOLD_MS,
+} from './activity';
 
 export interface QueueWorker {
   name: QueueName;
@@ -17,6 +23,12 @@ export interface RuntimeDeps {
   workers: QueueWorker[];
   /** Off locally and in CI: the worker then never sleeps, exactly as before sleep mode existed. */
   sleepEnabled: boolean;
+  /**
+   * Production: exit 0 once idle, so Fly stops the machine (`on-failure` does not restart a clean
+   * exit). Off by default, which keeps the in-process hourly sleep.
+   */
+  exitWhenIdle?: boolean;
+  onIdleExit?: () => Promise<void>;
   now: () => Date;
 }
 
@@ -115,7 +127,45 @@ export class WorkerRuntime {
       return;
     }
     await this.#sleep(decision.nextCheckAt);
+    if (this.deps.exitWhenIdle) {
+      this.#schedule(IDLE_EXIT_GRACE_MS, () => this.#exitIfStillIdle());
+      return;
+    }
     this.#schedule(delay, () => this.#wakeUp('tick'));
+  }
+
+  /** The grace wait lets a wake or a just-enqueued job cancel the exit. */
+  async #exitIfStillIdle() {
+    if (this.#state !== 'asleep') return;
+    const now = this.deps.now();
+    let decision;
+    try {
+      const [weddings, pendingJobs] = await Promise.all([
+        this.deps.listWindows(now),
+        this.#pendingJobs(),
+      ]);
+      decision = decideMode({ now, weddings, pendingJobs, wakeUntil: this.#wakeUntil });
+    } catch (err) {
+      console.error('[worker] idle recheck failed', err);
+      this.#schedule(AWAKE_CHECK_MS, () => this.#wakeUp('tick'));
+      return;
+    }
+    if (decision.mode === 'awake') {
+      await this.#wakeUp('recheck');
+      return;
+    }
+    if (!this.deps.onIdleExit) {
+      console.error('[worker] exitWhenIdle set without a shutdown hook, sleeping in-process');
+      const delay = decision.nextCheckAt.getTime() - now.getTime();
+      this.#schedule(delay, () => this.#wakeUp('tick'));
+      return;
+    }
+    console.info('[worker] idle, exiting so Fly can stop the machine');
+    try {
+      await this.deps.onIdleExit();
+    } catch (err) {
+      console.error('[worker] idle exit failed', err);
+    }
   }
 
   async #sleep(until: Date) {

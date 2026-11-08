@@ -14,11 +14,14 @@ przechodzi na odpytywanie co 30 s. Poza oknem galeria odświeża się co 10 minu
 wysyła żadnych zapytań.
 
 **Tryb uśpienia.** Neon płaci za czas działania bazy, nie za zapytania, i usypia ją po 5 minutach
-bez zapytań. Dlatego poza oknami wesel worker przestaje odpytywać kolejkę i budzi się raz na
-godzinę (cykl życia). Web budzi go od razu przez `POST http://vgb-worker.internal:8081/wake`, gdy
-gość coś wyśle, para aktywuje lub przywróci wesele, zmieni datę albo superadmin odblokuje wesele.
-Wymaga sekretu `WORKER_WAKE_TOKEN` w obu aplikacjach; bez niego worker działa bez przerwy jak
-dawniej. `/api/health` (sprawdzenie Fly co 15 s) nie dotyka bazy.
+bez zapytań. Poza oknami wesel worker kończy pracę i wychodzi z kodem 0. Fly nie podnosi go z
+powrotem (`restart.policy = on-failure`), więc maszyna 1 GB stoi. Web trzyma zegar: co godzinę,
+albo wcześniej gdy zaczyna się okno wesela, uruchamia maszynę przez API Fly (`FLY_API_TOKEN`,
+token wdrożeniowy tylko do aplikacji `vgb-worker`). To samo robi po wysłaniu zdjęcia, aktywacji,
+przywróceniu, zmianie daty i odblokowaniu. Dodatkowo, gdy proces już działa, web woła
+`POST http://vgb-worker.internal:8081/wake`. Bez `WORKER_WAKE_TOKEN` worker w ogóle nie zasypia.
+Bez `WORKER_EXIT_WHEN_IDLE` zasypia w procesie i maszyna zostaje włączona, jak wcześniej.
+`/api/health` (sprawdzenie Fly co 15 s) nie dotyka bazy.
 
 ## Szybka diagnoza
 
@@ -28,7 +31,7 @@ dawniej. `/api/health` (sprawdzenie Fly co 15 s) nie dotyka bazy.
 | Czy baza odpowiada    | `curl https://<domena>/api/health/db` → `{"ok":true}` (budzi Neon, nie podpinaj pod częsty monitoring)          |
 | Logi web              | `fly logs -a vgb-web`                                                                                           |
 | Czy worker przetwarza | `fly logs -a vgb-worker` → linie `[job] photo … ok in …ms`                                                      |
-| Czy worker śpi        | `fly logs -a vgb-worker` → `[worker] asleep until …` / `[worker] awake (…)`                                     |
+| Czy worker śpi        | `fly status -a vgb-worker` → maszyna `stopped` poza oknem; log `[worker] idle, exiting` albo `[worker] awake`   |
 | Kolejka zadań         | SQL poniżej                                                                                                     |
 | Błędy aplikacji       | Sentry (projekt web i worker)                                                                                   |
 | Status dostawców      | [Fly](https://status.flyio.net), [Cloudflare](https://www.cloudflarestatus.com), [Neon](https://neonstatus.com) |
@@ -60,12 +63,12 @@ select status, count(*) from media where wedding_id = '<id>' group by 1;
   zezwalać na `PUT` z domeny aplikacji z nagłówkiem `Content-Type`.
 - „Galeria osiągnęła limit plików”: limit planu. Na teraz: zmiana planu wesela w SQL
   (`update weddings set plan = 'premium' where id = '<id>';`).
-- Upload przechodzi, ale zdjęcie nie pojawia się w galerii: worker. Sprawdź `fly logs -a vgb-worker`.
-  Jeśli po wysłaniu nie ma linii `[worker] awake (request)`, web nie budzi workera: sprawdź, czy
-  `WORKER_WAKE_TOKEN` jest taki sam w obu aplikacjach (`fly secrets list`) i czy w logach web nie ma
-  `[worker-wake]`. Śpiący worker i tak podejmie zadania w ciągu godziny.
-  Jeśli maszyna nie działa: `fly machine start -a vgb-worker`. Zadania nie giną: pg-boss podejmie je
-  po restarcie. Pliki `uploading` starsze niż 24 h (gość nie dokończył wysyłki) są oznaczane jako
+- Upload przechodzi, ale zdjęcie nie pojawia się w galerii: worker. Poza oknem wesela maszyna ma
+  być `stopped`; web powinien ją włączyć, a w logach web nie może zostać `[worker-start]`. Pierwsze
+  zdjęcie po ciszy czeka, aż maszyna wstanie. Gdy start się nie uda, zadanie leży do następnego
+  godzinnego włączenia. Ręcznie: `fly machine start -a vgb-worker` (maszyna podstawowa, nie standby).
+  Zadania nie giną: pg-boss podejmie je po starcie. `WORKER_WAKE_TOKEN` musi być taki sam w obu
+  aplikacjach, a `FLY_API_TOKEN` ustawiony na web. Pliki `uploading` starsze niż 24 h (gość nie dokończył wysyłki) są oznaczane jako
   nieudane i sprzątane. Pliki `processing` starsze niż godzina są ponawiane co przebieg cyklu życia:
   zdjęcia wracają do kolejki, a stan filmów jest pobierany z Stream.
 
@@ -119,6 +122,10 @@ fly deploy . --config apps/worker/fly.toml --dockerfile apps/worker/Dockerfile
 fly deploy . --config apps/web/fly.toml --dockerfile apps/web/Dockerfile
 ```
 
+Gdy ta wersja dopiero włącza `WORKER_EXIT_WHEN_IDLE`, kolejność jest odwrotna: najpierw web z
+ustawionym `FLY_API_TOKEN`, potem worker. Inaczej maszyna workera zostanie zatrzymana i nic jej
+nie podniesie.
+
 Wycofanie: `fly releases -a vgb-web`, potem `fly deploy --image <poprzedni obraz>`. Migracje są
 wstecznie zgodne (dodają kolumny albo poszerzają typ), więc poprzednia wersja działa na nowym
 schemacie. Zmiana typu kolumny blokuje tabelę na czas przepisania; migracja łamiąca zgodność
@@ -171,9 +178,13 @@ wymaga wdrożenia w dwóch krokach.
    fly secrets set -a vgb-web --stage "WORKER_WAKE_TOKEN=$TOKEN"
    ```
    `fly secrets list` w obu aplikacjach powinien pokazać ten sam digest `WORKER_WAKE_TOKEN`.
-   `--stage` zapisuje sekret bez restartu; wchodzi w życie przy najbliższym wdrożeniu (najpierw
-   worker, potem web). Sam token na workerze bez tokenu na web oznacza, że worker śpi, a web go nie
-   budzi: zdjęcia pojawiają się wtedy z opóźnieniem do godziny.
+   Zatrzymywanie maszyny workera: token wdrożeniowy tylko do `vgb-worker`, wyłącznie na web.
+   `fly tokens create deploy -a vgb-worker` wypisuje token raz. Ustaw go jako `FLY_API_TOKEN` na
+   `vgb-web` (`fly secrets set -a vgb-web FLY_API_TOKEN=...`). Na workerze tego sekretu nie ma.
+   `--stage` zapisuje sekret bez restartu; wchodzi w życie przy najbliższym wdrożeniu. Zwykle najpierw
+   worker, potem web. Wyjątek: włączenie `WORKER_EXIT_WHEN_IDLE` wymaga najpierw web z `FLY_API_TOKEN`,
+   inaczej worker wyjdzie i nikt go nie uruchomi. Sam token budzenia na workerze bez tokenu na web
+   oznacza, że worker śpi, a web go nie budzi: zdjęcia pojawiają się wtedy z opóźnieniem do godziny.
    `PIN_ENCRYPTION_KEY` musi być identyczny w web i worker i **nie może się zmienić**: bez niego PIN-y
    istniejących wesel są nie do odczytania.
 7. **Test obciążeniowy na stagingu:** `k6 run -e BASE_URL=... -e WEDDINGS="slug:PIN,..." load/k6-wedding.js`

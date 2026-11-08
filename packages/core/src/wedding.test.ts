@@ -9,6 +9,8 @@ import {
   dueTransition,
   fullActivityWindow,
   guestCanUpload,
+  nextIdleCheckAt,
+  WORKER_IDLE_TICK_MS,
   guestCanView,
   isFullyActive,
   requestDeletion,
@@ -102,6 +104,23 @@ describe('fullActivityWindow', () => {
     const spring = warsawMidnight('2026-03-28')!;
     const w = { eventDate: spring, ...computeSchedule(spring, 3, 'standard') };
     expect(fullActivityWindow(w).from).toEqual(new Date('2026-03-26T23:00:00Z'));
+  });
+});
+
+describe('nextIdleCheckAt', () => {
+  const day = warsawMidnight('2026-06-20')!;
+
+  it('waits an hour when no wedding window opens sooner', () => {
+    const now = new Date('2026-01-01T00:00:00Z');
+    const w = { eventDate: day, ...computeSchedule(day, 3, 'standard') };
+    expect(nextIdleCheckAt(now, [w]).getTime() - now.getTime()).toBe(WORKER_IDLE_TICK_MS);
+  });
+
+  it('wakes when a window opens inside the hour', () => {
+    const w = { eventDate: day, ...computeSchedule(day, 3, 'standard') };
+    const from = fullActivityWindow(w).from;
+    const now = new Date(from.getTime() - 20 * 60_000);
+    expect(nextIdleCheckAt(now, [w])).toEqual(from);
   });
 });
 

@@ -10,6 +10,13 @@ kill_timeout = 75
   VIDEO_PROVIDER = "cloudflare"
   S3_REGION = "auto"
   S3_FORCE_PATH_STYLE = "true"
+  # Exit 0 when idle. Requires restart policy on-failure (a clean exit stays stopped) and
+  # FLY_API_TOKEN on vgb-web, which starts this machine again. Deploy web first.
+  WORKER_EXIT_WHEN_IDLE = "true"
+
+[[restart]]
+  policy = "on-failure"
+  max_retries = 10
 
 [deploy]
   release_command = "node_modules/.bin/tsx ../../packages/db/src/migrate-cli.ts"

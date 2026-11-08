@@ -1,6 +1,7 @@
 import { PG_BOSS_BACKGROUND_TIMER_SECONDS, QUEUE_CONFIG, QUEUES, type QueueName } from '@vgb/core';
 import { PgBoss, type SendOptions } from 'pg-boss';
 import { env } from './env';
+import { startWorkerMachines } from './fly-machines';
 
 /** The worker stays awake 15 minutes per wake, so one request a minute per process is plenty. */
 const WAKE_THROTTLE_MS = 60_000;
@@ -52,19 +53,32 @@ export async function enqueue(
  * the worker would only notice at its hourly tick. Best effort: never throws.
  */
 export async function wakeWorker(): Promise<void> {
-  const { WORKER_WAKE_URL: url, WORKER_WAKE_TOKEN: token } = env();
-  if (!url || !token) return;
   const now = Date.now();
   if (now - (g.__vgbLastWake ?? 0) < WAKE_THROTTLE_MS) return;
   g.__vgbLastWake = now;
+  const started = await startWorkerMachines();
+  const posted = await postWake();
+  // A machine that was just started is not listening yet; its boot drains the queue. A failed
+  // start, or a failed wake of a machine that was already up, should be tried again next time.
+  if (started === 'failed' || (started === 'skipped' && !posted)) g.__vgbLastWake = 0;
+}
+
+async function postWake(): Promise<boolean> {
+  const { WORKER_WAKE_URL: url, WORKER_WAKE_TOKEN: token } = env();
+  if (!url || !token) return true;
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(WAKE_TIMEOUT_MS),
     });
-    if (!res.ok) console.warn('[worker-wake] unexpected status %d', res.status);
+    if (!res.ok) {
+      console.warn('[worker-wake] unexpected status %d', res.status);
+      return false;
+    }
+    return true;
   } catch (err) {
     console.warn('[worker-wake] failed:', err instanceof Error ? err.message : err);
+    return false;
   }
 }
